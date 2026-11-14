@@ -1,0 +1,81 @@
+Validacio del paquet zfs-rescue
+Data de preparacio: 2026-11-11
+Entorn executat: Linux, Python 3.12
+
+Ordre: python -m unittest -v test_zfs_rescue
+Resultat observat: Ran 20 tests in 0.796s -- OK
+
+Les advertencies sobre TXG 101, duplicacio de membre, manca de TXG i ENOSPC
+son errors injectats deliberadament; les proves comproven el resultat esperat.
+La biblioteca liblz4.so.1 estava disponible i es va utilitzar com a contrast
+del vector de descompressio LZ4.
+
+Cobertura:
+- Extraccio d'un dataset sintetic complet amb arbre i bytes coneguts.
+- Mirror amb corrupcio silenciosa al primer membre.
+- Error EIO, lectura curta i combinacio de sectors complementaris.
+- Verificacio SHA/Fletcher i checksum d'uberblock de 4096 bytes.
+- Seleccio automatica de TXG anterior i seleccio estricta d'un TXG concret.
+- SA amb IDs no fixos, layouts fat ZAP, spill i dnodes grans.
+- Znodes antics, micro ZAP, cicles fat ZAP i fulles perdudes.
+- LZ4, gzip, LZJB, ZLE i embedded BP comprimit/no comprimit.
+- Big endian i little endian; offsets relatius a particio.
+- Fitxers sparse, buits, hardlinks, symlinks i noms no UTF-8.
+- SHA-256 de fitxers recuperats i invariancia de les imatges abans/despres.
+- Flags O_RDONLY i rebuig d'escriptura pel kernel amb EBADF.
+- DVA alternatiu, gang/xifrat/checksum OFF rebutjats.
+- GPT amb CRC incorrecte i recuperacio de la copia de capcalera secundaria.
+- Mapes ddrescue, sortides parcials amb intervals il-legibles, proteccio de
+  rutes, carpeta existent i error d'escriptura ENOSPC.
+
+Limitacions de la validacio:
+- No s'ha usat cap disc fisic ni cap pool de l'usuari.
+- Les imatges s'han construit segons el format documentat, NO amb OpenZFS.
+- No s'ha demostrat interoperabilitat general ni recuperacio d'un cas real.
+- No hi ha validacio executada a FreeBSD ni mesures de rendiment a escala TiB.
+- El suport implementat pero no cobert integrament per aquestes fixtures
+  (per exemple, tot tipus de taula ZAP externa o snapshots) requereix proves
+  addicionals amb mostres reals abans de considerar-se fiable en aquell cas.
+
+Validacio de la versio modular
+Entorn: Linux, Python 3.12.14
+36 definicions de funcions/classes identiques a la versio monolitica (comparacio AST).
+20 proves superades: 19 anteriors adaptades i una extraccio en subproces
+amb cwd diferent, noms de moduls en conflicte, fallback de replica i hash de fonts.
+Els ERROR/WARNING de la sortida seguent corresponen a fallades injectades.
+
+test_big_endian_and_partition_relative_offsets (test_zfs_rescue.RescueTests.test_big_endian_and_partition_relative_offsets) ... WARNING: Reject TXG 101: No verified replica: Block checksum mismatch; Block checksum mismatch
+ok
+test_complementary_bad_sectors_and_no_false_zero_fill (test_zfs_rescue.RescueTests.test_complementary_bad_sectors_and_no_false_zero_fill) ... ok
+test_ddrescue_map_rejects_unknown_ranges (test_zfs_rescue.RescueTests.test_ddrescue_map_rejects_unknown_ranges) ... ok
+test_duplicate_member_identity_is_rejected (test_zfs_rescue.RescueTests.test_duplicate_member_identity_is_rejected) ... ERROR: Stopped: Inputs are copies of the same mirror member
+ok
+test_embedded_payload_word_order_both_endiannesses (test_zfs_rescue.RescueTests.test_embedded_payload_word_order_both_endiannesses) ... ok
+test_end_to_end_tree_sa_legacy_sparse_hardlink_and_old_txg (test_zfs_rescue.RescueTests.test_end_to_end_tree_sa_legacy_sparse_hardlink_and_old_txg) ... WARNING: Reject TXG 101: No verified replica: Block checksum mismatch; Block checksum mismatch
+ok
+test_exact_txg_never_falls_back (test_zfs_rescue.RescueTests.test_exact_txg_never_falls_back) ... WARNING: Reject TXG 101: No verified replica: Block checksum mismatch; Block checksum mismatch
+ERROR: Stopped: No requested TXG has a readable MOS/target root with supported formats
+ok
+test_fat_zap_cycles_rejected_and_other_leaves_survive (test_zfs_rescue.RescueTests.test_fat_zap_cycles_rejected_and_other_leaves_survive) ... ok
+test_fletcher_reference_vectors_and_sha_endianness (test_zfs_rescue.RescueTests.test_fletcher_reference_vectors_and_sha_endianness) ... ok
+test_gpt_crc_backup_and_partition_geometry (test_zfs_rescue.RescueTests.test_gpt_crc_backup_and_partition_geometry) ... ok
+test_list_and_no_matching_txg (test_zfs_rescue.RescueTests.test_list_and_no_matching_txg) ... WARNING: Reject TXG 101: No verified replica: Block checksum mismatch; Block checksum mismatch
+ERROR: Stopped: No verified uberblock matches the requested TXG/root filters
+ok
+test_lz4_against_system_library_and_bounded_invalid_streams (test_zfs_rescue.RescueTests.test_lz4_against_system_library_and_bounded_invalid_streams) ... ok
+test_lzjb_zle_and_embedded_compressed_sizes (test_zfs_rescue.RescueTests.test_lzjb_zle_and_embedded_compressed_sizes) ... ok
+test_other_dva_fallback_and_unsupported_bp_rejection (test_zfs_rescue.RescueTests.test_other_dva_fallback_and_unsupported_bp_rejection) ... ok
+test_output_enospc_aborts_without_publishing_file (test_zfs_rescue.RescueTests.test_output_enospc_aborts_without_publishing_file) ... WARNING: Reject TXG 101: No verified replica: Block checksum mismatch; Block checksum mismatch
+ERROR: Stopped: [Errno 28] injected full destination
+ok
+test_packaged_entry_point_from_other_directory (test_zfs_rescue.RescueTests.test_packaged_entry_point_from_other_directory) ... ok
+test_path_traversal_existing_destination_and_symlink_traversal (test_zfs_rescue.RescueTests.test_path_traversal_existing_destination_and_symlink_traversal) ... ok
+test_source_readonly_bounds_short_read_and_io_fallback (test_zfs_rescue.RescueTests.test_source_readonly_bounds_short_read_and_io_fallback) ... ok
+test_uber_checksum_depends_on_slot_offset_and_whole_slot (test_zfs_rescue.RescueTests.test_uber_checksum_depends_on_slot_offset_and_whole_slot) ... ok
+test_unrecoverable_file_is_quarantined_with_ranges (test_zfs_rescue.RescueTests.test_unrecoverable_file_is_quarantined_with_ranges) ... WARNING: Reject TXG 101: No verified replica: Block checksum mismatch; Block checksum mismatch
+ok
+
+----------------------------------------------------------------------
+Ran 20 tests in 0.796s
+
+OK

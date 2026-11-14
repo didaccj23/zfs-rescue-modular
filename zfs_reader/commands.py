@@ -1,0 +1,188 @@
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import logging
+import stat
+import uuid
+import zlib
+from collections import Counter
+
+from .base import Corrupt, LOG, MAX_BLOCK, MAX_ENTRIES, RescueError, require, u64, unpack
+from .extract import Destination, extract
+from .pool import PoolView
+from .sources import Source
+from .scan import scan
+
+def probe_gpt(source, sector_size):
+    """Read both GPTs with header/table CRC validation. Never modify either."""
+    require(source.offset == 0, "probe expects a whole image/device with offset zero")
+    total = source.size
+    results, failures = [], []
+    for lba in (1, total // sector_size - 1):
+        try:
+            raw = source.read(lba * sector_size, sector_size)
+            require(raw[:8] == b"EFI PART", "No GPT signature")
+            version, headsize, crc = unpack("<III", raw, 8)
+            require(version == 0x10000 and 92 <= headsize <= sector_size, "Invalid GPT header")
+            checked = bytearray(raw[:headsize])
+            checked[16:20] = bytes(4)
+            require(zlib.crc32(checked) == crc, "GPT header CRC mismatch")
+            current, backup, first, last = unpack("<4Q", raw, 24)
+            require(current == lba and first <= last and last * sector_size < total, "Invalid GPT bounds")
+            array_lba = u64(raw, 72)
+            count, entrysize, tablecrc = unpack("<III", raw, 80)
+            require(0 < count <= 16384 and 128 <= entrysize <= 4096 and count * entrysize <= MAX_BLOCK,
+                    "Invalid GPT entry geometry")
+            array = source.read(array_lba * sector_size, count * entrysize)
+            require(zlib.crc32(array) == tablecrc, "GPT partition array CRC mismatch")
+            partitions = []
+            for index in range(count):
+                entry = array[index * entrysize:(index + 1) * entrysize]
+                if not any(entry[:16]):
+                    continue
+                begin, end = unpack("<2Q", entry, 32)
+                require(first <= begin <= end <= last, "GPT partition outside usable space")
+                partitions.append({"index": index + 1, "type_guid": str(uuid.UUID(bytes_le=entry[:16])),
+                                   "name": entry[56:128].decode("utf-16le", "replace").rstrip("\0"),
+                                   "offset": begin * sector_size, "length": (end - begin + 1) * sector_size})
+            results.append({"header_lba": lba, "sector_size": sector_size, "partitions": partitions})
+        except RescueError as exc:
+            failures.append({"header_lba": lba, "error": str(exc)})
+    return {"source": source.path, "valid_gpt_copies": results, "failed_gpt_copies": failures}
+
+
+def integer(text):
+    try:
+        value = int(text, 0)
+        if value < 0:
+            raise ValueError
+        return value
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("Use a nonnegative byte count/integer (decimal or 0x...)") from exc
+
+
+def cli(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("command", choices=("probe", "scan", "list", "check", "extract"))
+    parser.add_argument("--source", action="append", required=True, help="Mirror image or leaf partition; repeat for member 2")
+    parser.add_argument("--offset", action="append", type=integer, help="Vdev start in bytes, one per source; default all zero")
+    parser.add_argument("--length", action="append", type=integer, help="Vdev/partition length, one per source; default to end")
+    parser.add_argument("--mapfile", action="append", help="ddrescue map, one per source; '-' means no map")
+    parser.add_argument("--dataset", help="Exact pool/dataset or pool/dataset@snapshot")
+    parser.add_argument("--txg", type=integer, help="Only try this exact TXG; never silently choose another")
+    parser.add_argument("--max-txg", type=integer, help="Only try TXGs <= this value")
+    parser.add_argument("--root-id", help="Select a root_id from scan if a TXG has conflicting roots")
+    parser.add_argument("--dest", help="NEW directory on healthy storage; parent must exist")
+    parser.add_argument("--sector-recovery", action="store_true", help="Try readable 512-byte sectors after whole-copy failures")
+    parser.add_argument("--sector-size", type=int, choices=(512, 4096), default=512, help="GPT logical sector size for probe")
+    parser.add_argument("--max-file-size", type=integer, default=16 << 40, help="Maximum extracted file bytes (default 16 TiB)")
+    parser.add_argument("--max-entries", type=integer, default=MAX_ENTRIES, help="Traversal safety bound")
+    parser.add_argument("-v", "--verbose", action="count", default=0)
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.DEBUG if args.verbose > 1 else logging.INFO if args.verbose else logging.WARNING,
+                        format="%(levelname)s: %(message)s")
+    if not 1 <= len(args.source) <= 2:
+        parser.error("Supply one or two sources")
+    for key in ("offset", "length", "mapfile"):
+        value = getattr(args, key)
+        if value is not None and len(value) != len(args.source):
+            parser.error(f"--{key} must be supplied once per source")
+    if args.command in ("check", "extract") and not args.dataset:
+        parser.error("--dataset is required for check/extract")
+    if args.command == "extract" and not args.dest:
+        parser.error("--dest is required for extract")
+    if args.dest and args.command != "extract":
+        parser.error("--dest is only used by extract")
+    sources, destination = [], None
+    try:
+        for i, path in enumerate(args.source):
+            source = Source(path, args.offset[i] if args.offset else 0,
+                            args.length[i] if args.length else None,
+                            args.mapfile[i] if args.mapfile and args.mapfile[i] != "-" else None)
+            sources.append(source)
+        require(len({(s.st.st_dev, s.st.st_ino, s.st.st_rdev) for s in sources}) == len(sources),
+                "The same source was supplied more than once")
+        if args.command == "probe":
+            for source in sources:
+                print(json.dumps(probe_gpt(source, args.sector_size), ensure_ascii=True))
+            return 0
+        info, candidates = scan(sources)
+        print(json.dumps({"event": "pool", **info}, ensure_ascii=True))
+        candidates = [ub for ub in candidates if (args.txg is None or ub.txg == args.txg)
+                      and (args.max_txg is None or ub.txg <= args.max_txg)
+                      and (args.root_id is None or ub.public()["root_id"] == args.root_id)]
+        require(candidates, "No verified uberblock matches the requested TXG/root filters")
+        if args.command == "scan":
+            for ub in candidates:
+                print(json.dumps({"event": "uberblock", **ub.public()}))
+            return 0
+        view, filesystem = None, None
+        # Conflicting same-TXG roots require an explicit selection.
+        by_txg = Counter(ub.txg for ub in candidates)
+        if any(n > 1 for n in by_txg.values()):
+            raise Corrupt("Conflicting roots within a TXG; select --txg and --root-id from scan")
+        for ub in candidates:
+            try:
+                attempted = PoolView(sources, info, ub, args.sector_recovery)
+                if args.command in ("check", "extract"):
+                    filesystem = attempted.dataset(args.dataset)
+                    attrs = filesystem.attributes(filesystem.os.node(filesystem.root))
+                    require(stat.S_ISDIR(attrs["mode"]), "Dataset root mode is not directory")
+                    filesystem.os.zap(filesystem.root)  # validate root directory before committing to this TXG
+                view = attempted
+                break
+            except RescueError as exc:
+                LOG.warning("Reject TXG %d: %s", ub.txg, exc)
+        require(view is not None, "No requested TXG has a readable MOS/target root with supported formats")
+        selected = {"event": "selected", **view.uber.public(), "dataset": args.dataset,
+                    "validation": "MOS and target root only; not a full dataset integrity test"}
+        print(json.dumps(selected, ensure_ascii=True))
+        if args.command == "list":
+            for dataset in view.datasets():
+                print(json.dumps(dataset, ensure_ascii=True))
+            return 0
+        if args.command == "check":
+            print(json.dumps({"event": "check", "status": "root_readable", "root_object": filesystem.root,
+                              "note": "File contents and descendant directories have not all been read."}))
+            return 0
+        destination = Destination(args.dest, sources)
+        destination.emit(event="run", version=1, pool=info, selected=selected,
+                         started_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                         limitations="One dataset/TXG; no child datasets, ACL/xattr restore or ZIL replay. See README_CA.md.")
+        stats = extract(filesystem, destination, args.max_file_size, args.max_entries)
+        result = {"event": "summary", "status": "partial" if stats.get("errors") else "completed_supported_scope",
+                  "counts": stats, "reader": dict(view.reader.stats),
+                  "sources": [{"path": s.path, "stats": dict(s.stats)} for s in sources],
+                  "destination": destination.path}
+        destination.emit(**result)
+        print(json.dumps(result, ensure_ascii=True))
+        return 2 if stats.get("errors") else 0
+    except (RescueError, OSError, ValueError) as exc:
+        LOG.error("Stopped: %s", exc)
+        if destination:
+            try:
+                destination.emit(event="aborted", error=str(exc))
+            except OSError:
+                pass
+        return 1
+    except KeyboardInterrupt:
+        LOG.warning("Interrupted; output is incomplete. Original sources were only opened O_RDONLY.")
+        if destination:
+            destination.emit(event="aborted", error="KeyboardInterrupt")
+        return 130
+    finally:
+        close_failed = False
+        try:
+            if destination:
+                try:
+                    destination.close()
+                except OSError as exc:
+                    close_failed = True
+                    LOG.error("Output/report could not be flushed; this run is incomplete: %s", exc)
+        finally:
+            for source in sources:
+                source.close()
+        if close_failed:
+            return 1
