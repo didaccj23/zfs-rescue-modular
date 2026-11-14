@@ -1,5 +1,9 @@
 # Auditoria del codi proporcionat
 
+> Les seccions originals següents descriuen la versió modular inicial.
+> L'ampliació de selecció es documenta al final; la identitat AST històrica
+> no s'aplica als mètodes modificats ara.
+
 La versió original és un esbós de lectura del MOS, no un rescatador de datasets.
 No l'he considerat adequada per executar-la com a única via de recuperació sobre
 discs físicament degradats.
@@ -51,3 +55,47 @@ les importacions de les proves i el punt d'injecció de l'error ENOSPC.
 Les 19 proves anteriors i una prova nova d'execució des d'una altra carpeta
 superen la validació en Linux amb Python 3.12. Això verifica les fixtures i
 la reorganització; continuen vigents els límits de validació amb pools reals.
+
+## Ampliació: navegació i recuperació selectiva
+
+- `selection.py` valida rutes relatives per components i impedeix travessar
+  symlinks. `browse.py` recorre metadades, sense llegir dades de fitxers.
+- `--include` filtra abans d'encuar entrades; una selecció no recorre els
+  subarbres germans. L'extracció per ordres exigeix TXG explícit; el selector
+  conserva el mateix object set/TXG des de la navegació fins a la còpia.
+  Les rutes es comproven abans de crear cap destinació. Checksum, rèpliques,
+  fonts `O_RDONLY` i protecció de destinació original no s'han relaxat.
+- S'afegeixen límits de directori i pressupostos de rutes pendents/enllaços
+  durs per reduir el risc de consumir memòria sense límit. Són pressupostos
+  d'estructures concretes, no un límit RSS global ni una prova en 8 GB.
+- Les proves noves portables utilitzen dobles d'E/S i també les fixtures ZFS
+  sintètiques originals. Verifiquen bytes, hashes de fonts, selecció, parcials,
+  fallback de checksum, byte order i offsets. No demostren comportament del
+  kernel POSIX ni interoperabilitat amb pools reals.
+- Les proves POSIX originals i quatre casos d'integració nous queden
+  disponibles per executar en Linux. L'execució actual en Windows les marca
+  com a omeses. Vegeu `TEST_RESULTS.txt` per als resultats exactes.
+- No s'han llegit discs de l'usuari ni s'ha creat cap commit. El manifest
+  `SHA256SUMS.txt` s'ha deixat intacte i ha quedat desactualitzat.
+
+## Selector interactiu de terminal
+
+- `tui.py` afegeix `select`: Enter només obre directoris; Espai marca/desmarca
+  carpetes senceres o fitxers individuals. No obre continguts de fitxers ni
+  segueix symlinks. Les marques es mantenen en canviar de carpeta i s'unifiquen
+  per components, sense confondre noms semblants.
+- La revisió amb `r` exigeix una confirmació diferent (`s`). Una selecció buida
+  no pot convertir-se en una extracció completa. Cancel·lar, interrompre o
+  excedir un pressupost abans de confirmar no crea la destinació.
+- Només manté un directori, 256 entrades d'atributs en memòria cau i marques amb
+  pressupost estimat de 64 MiB. No construeix un catàleg del dataset ni visita
+  descendents per marcar una carpeta. Les rutes llargues es poden consultar
+  completes; els caràcters de control i noms no UTF-8 es mostren escapats.
+- `curses` s'importa sota demanda, amb comprovació de terminal abans d'obrir
+  fonts. La pantalla i el nivell de log es restauren també davant d'errors.
+  L'extracció posterior reutilitza la destinació segura i el manifest existents.
+- `test_tui.py` afegeix proves portables de model, teclat/pantalla, CLI i imatge
+  sintètica, i dues proves curses/PTY POSIX. Aquestes dues, juntament amb les
+  24 proves POSIX anteriors, queden pendents d'execució en Linux.
+- `README_CA.md` es reorganitza en quatre passos i referències desplegables,
+  conservant les instruccions de fonts, imatges, formats, seguretat i límits.

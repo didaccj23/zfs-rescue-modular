@@ -1,362 +1,516 @@
-# Recuperació ZFS en Python: lector offline per a un mirror de dos discs
+# Rescat ZFS: triar i recuperar carpetes o fitxers
 
-**Estat: experimental. Provat amb imatges sintètiques i errors injectats, no amb
-els teus discs ni amb una imatge produïda per un pool OpenZFS real.**
+**Experimental:** provat amb imatges sintètiques i errors injectats, **no amb un
+pool creat per OpenZFS ni amb els teus discs**. Llistar una carpeta no garanteix
+que el contingut dels seus fitxers sigui recuperable.
 
-El programa adjunt original no recuperava un dataset: només desava el bloc
-`objset_phys` del MOS. Aquesta versió implementa el recorregut fins als fitxers,
-però no és un recuperador universal de ZFS. Si el teu pool utilitza un format no
-suportat o ha perdut metadades imprescindibles, ho indica en lloc d'inventar dades.
+Lector Python offline per a **un únic mirror de dos membres**. Permet navegar
+amb el teclat i recuperar **carpetes senceres o fitxers individuals**, sense
+extreure abans tot `vol1/DATA` ni necessitar espai per a tot el dataset.
 
-## Instal·lació i estructura modular
+**Guia:** [Preparació](#1-preparació) · [Fonts](#2-fonts-i-dataset) ·
+[Selector](#3-triar-amb-el-teclat-i-recuperar) · [Resultats](#4-resultats-i-lots) ·
+[Referència tècnica](#referència)
 
-Descomprimeix `zfs-rescue-modular.zip` i entra a la carpeta `zfs-rescue-modular`.
-Conserva aquesta estructura completa; el fitxer principal necessita la carpeta
-`zfs_reader` al seu costat. No barregis fitxers d'aquesta versió amb fragments
-anteriors ni amb el programa monolític.
+## 1. Preparació
 
-```text
-zfs-rescue-modular/
-├── zfs_rescue.py            # entrada de les ordres
-├── zfs_reader/
-│   ├── __init__.py          # paquet Python
-│   ├── base.py              # errors, checksums, descompressió i XDR
-│   ├── sources.py           # fonts de només lectura i mapes ddrescue
-│   ├── blocks.py            # punters, rèpliques i uberblocks
-│   ├── scan.py              # etiquetes i selecció de candidats
-│   ├── objects.py           # dnodes, object sets i ZAP
-│   ├── pool.py              # datasets, snapshots i atributs
-│   ├── extract.py           # destinació i extracció
-│   └── commands.py          # arguments i execució de les ordres
-├── test_zfs_rescue.py
-├── README_CA.md
-├── AUDITORIA_CA.md
-├── SOURCES.md
-├── TEST_RESULTS.txt
-└── SHA256SUMS.txt
-```
+- **Conserva els originals.** El més segur és fer una imatge independent de cada
+  disc i treballar-hi. Si no tens espai per a dues imatges d'1 TB, pots llegir
+  directament les particions en Linux, però **les lectures també poden empitjorar
+  un disc avariat**. Si fa sorolls anormals, es desconnecta o es degrada, atura't
+  i valora un servei professional.
+- **No importis ni muntis el pool original; no facis scrub, actualitzacions ni
+  reparacions.** Evita automuntatges i accessos d'altres processos. El programa
+  només llegeix les fonts, però no impedeix escriptures alienes o del firmware.
+- Utilitza **Linux** —pot ser Live— i **Python 3.10 o posterior**. No calen
+  paquets pip. El selector necessita un terminal interactiu d'almenys **80 × 18**
+  i el mòdul estàndard `curses`; si el teu Python no l'inclou, instal·la el
+  paquet corresponent de la distribució o utilitza les ordres sense interfície.
+  A Windows natiu només es pot consultar l'ajuda i executar les proves portables.
+- Descomprimeix el paquet i entra a `zfs-rescue-modular`. Mantén `zfs_rescue.py`
+  i **tota** la carpeta `zfs_reader` junts, sense barrejar versions o fragments
+  monolítics. També pots executar l'entrada amb el camí complet des d'una altra
+  carpeta. No cal instal·lar res al TrueNAS.
+- El destí ha de ser **emmagatzematge sa, físicament independent dels originals**,
+  amb un sistema POSIX que admeti els noms originals, fitxers grans i enllaços
+  durs/simbòlics; preferiblement ext4, no FAT/exFAT ni sistemes que alterin noms
+  o majúscules. Només cal espai per a la selecció **descomprimida**, més marge
+  per a parcials, informes i metadades; no cal que tingui 2 TB.
 
-Des de la carpeta descomprimida:
+Comprova Python i que el destí estigui realment muntat:
 
 ```bash
-sha256sum -c SHA256SUMS.txt
+python3 --version
 python3 zfs_rescue.py --help
-python3 -m unittest -v test_zfs_rescue
+findmnt -T /mnt/DESTI_SA
+df -h /mnt/DESTI_SA
 ```
 
-A FreeBSD, es pot verificar un fitxer amb `sha256 nom_del_fitxer` i comparar-lo
-amb el valor corresponent del manifest. Les ordres de recuperació que es mostren
-més avall continuen utilitzant `python3 zfs_rescue.py`.
-També pots executar el programa des d'una altra carpeta indicant el camí complet
-al fitxer principal. Les importacions internes són relatives al paquet.
+`/mnt/DESTI_SA` és un exemple: **crear una carpeta no munta cap disc**. La carpeta
+pare ha d'existir; el destí de cada recuperació, com `DATA-lot1`, **ha de ser nou**,
+ni tan sols una carpeta buida existent.
 
-La divisió conserva els cossos de les 36 funcions i classes del lector anterior.
-Les proves importen ara els mòduls corresponents; la injecció de fallades també
-s'aplica al mòdul que realment fa l'operació. S'afegeix una prova que executa
-l'entrada en un procés separat, des d'una altra carpeta, extreu dades sintètiques
-amb una rèplica corrupta i comprova la invariància de les dues imatges.
+## 2. Fonts i dataset
 
-## Recomanació per al teu cas
+**Identifica cada disc per model, número de sèrie i mida.** Si ZFS ocupa una
+partició, selecciona aquella, no la de swap; no pressuposis el mateix número
+de partició als dos discs. Si no en coneixes els límits, no els inventis.
 
-Amb sectors danyats en tots dos discs, la prioritat és conservar-ne el màxim de
-contingut. Fes una imatge independent de cada disc en emmagatzematge sa i treballa
-amb les imatges. No importis el pool, no hi facis un scrub, no l'actualitzis i no
-executis operacions de reparació sobre els originals per provar aquest lector.
+```bash
+lsblk -o NAME,SIZE,MODEL,SERIAL,FSTYPE,LOG-SEC,MOUNTPOINTS
+ls -l /dev/disk/by-id/
+```
 
-Que UFS Explorer pugui llegir el dataset és un bon senyal, però no certifica tots
-els blocs de tots els fitxers. Tampoc no demostra que l'actualització de TrueNAS
-sigui la causa de la corrupció: cal distingir la seqüència dels fets de la causa,
-especialment amb errors físics ja coneguts.
+Defineix les fonts **una sola vegada** en Bash. Aquest exemple llegeix les
+particions originals; substitueix els dos identificadors:
 
-Si l'objectiu prioritari és recuperar dades insubstituïbles, una eina que ja ha
-demostrat que pot llegir aquest pool, o un servei professional si els discs es
-degraden, ofereix més confiança que un lector nou. Aquest paquet satisfà la
-petició d'una implementació Python independent, amb límits explícits. No el
-consideris més fiable que UFS Explorer només perquè tingui més comprovacions que
-el codi anterior.
+```bash
+FONTS=(
+  --source /dev/disk/by-id/ID_DISC_1-partN
+  --source /dev/disk/by-id/ID_DISC_2-partM
+)
+```
 
-## Què implementa
+| Fonts que tens | Configuració |
+|---|---|
+| Particions ZFS directes | La de l'exemple; offsets zero. |
+| Imatges de partició | Canvia els dispositius per les imatges; offsets zero. |
+| Discs o imatges **complets** | Cal `probe`, `--offset` i `--length`: obre la primera secció de referència. |
+| Imatges amb mapes ddrescue | Afegeix un `--mapfile` correcte per font; no reutilitzis mapes d'altres adquisicions. |
 
-- Fonts obertes exclusivament amb `os.O_RDONLY`; lectures amb `os.pread`.
-  No importa el pool, no el munta i no executa eines ZFS.
-- Lectura independent de les quatre etiquetes de **cada** membre. Verifica els
-  checksums SHA-256 de les configuracions i dels uberblocks, inclòs el verificador
-  basat en l'offset relatiu al vdev i la mida completa de la ranura.
-- Validació de GUID del pool, vdev superior i membres, i obtenció d'`ashift`.
-  Rebutja dos inputs que siguin el mateix membre.
-- Cerca de TXG de més recent a més antic fins que el MOS i l'arrel del dataset
-  sol·licitat siguin llegibles. `--txg` és estricte: si no serveix, no en tria un
-  altre. `--max-txg` permet excloure les transaccions posteriors a un límit conegut.
-- Descodificació de DVA, els tres emplaçaments possibles del BP, byte order,
-  blocs integrats (*embedded*) i punters indirectes.
-- Verificació de cada bloc físic abans de descomprimir-lo. Un checksum incorrecte,
-  una lectura curta o un error d'E/S provoquen la prova d'una altra còpia.
-- LZ4 de ZFS amb el prefix de longitud big-endian de quatre bytes; també sense
-  compressió, LZJB, gzip/zlib i ZLE. No requereix instal·lar `lz4`.
-- Checksums Fletcher2, Fletcher4, SHA-256 i SHA-512/256 quan OpenSSL el proporciona.
-- MOS → DSL directories/datasets/snapshots → object set ZPL → dnodes → ZAP.
-  Llegeix micro-ZAP, fat-ZAP i taules de punters externes; les fulles il·legibles
-  d'un directori es poden informar mentre s'extreuen les altres fulles accessibles.
-- Metadades de znode antic i SA, registres/layouts SA dinàmics, spill blocks i
-  dnodes grans. No pressuposa IDs fixos per als atributs SA.
-- Fitxers regulars, buits legítims, carpetes, enllaços durs entre fitxers recuperats
-  i enllaços simbòlics. Manté els bytes dels noms en un sistema POSIX compatible.
-- Informe JSONL amb errors, objectes, rutes, SHA-256 dels fitxers complets i
-  intervals il·legibles. Un fitxer parcial mai no apareix com a complet a `tree/`.
-- Mapes GNU ddrescue opcionals: només accepta com a llegits els intervals `+`.
-- Opció `--sector-recovery` per combinar sectors llegibles de còpies que tenen
-  errors d'E/S complementaris; sempre exigeix el checksum final correcte.
+Escaneja i comprova el nom del dataset:
 
-## Límits que cal comprovar abans
+```bash
+sudo python3 zfs_rescue.py scan "${FONTS[@]}"
+sudo python3 zfs_rescue.py list "${FONTS[@]}"
+```
 
-Aquest lector està pensat per a **un únic vdev superior mirror de dos membres**,
-amb almenys una configuració d'etiqueta vàlida en cada input proporcionat. Pot
-treballar amb un sol membre conegut, però aleshores no disposa del segon per
-rescatar blocs. Exigeix coherència de les etiquetes; no les reconstrueix.
+Confirma el pool `vol1` i el dataset exacte `vol1/DATA`; distingeixen majúscules.
+Tenir dos discs d'1 TB **no demostra que siguin un mirror**: `scan` valida la
+topologia. Un sol membre conegut pot servir, però sense la segona còpia per
+rescatar blocs. Cada font proporcionada necessita una configuració llegible.
 
-No implementa:
+Les ordres utilitzen `sudo` pels permisos dels dispositius. Amb imatges llegibles
+i un destí accessible, executa `python3` sense privilegis; **no canviïs els
+permisos dels discs originals**.
 
-- Xifrat natiu ZFS ni GELI de TrueNAS CORE; no gestiona claus ni desxifra dades.
-- ZSTD; checksums Skein, Edon-R o BLAKE3; blocs amb checksum desactivat. Un bloc
-  sense checksum no es presenta com a verificat.
-- Gang blocks, RAIDZ/dRAID, vdevs indirectes per eliminació de dispositius,
-  topologies `replacing`/`spare` ni pools amb diversos vdevs superiors, inclosos
-  possibles vdevs de log o especials.
-- Reconstrucció heurística de MOS/ZAP destruïts, cerca de fitxers esborrats,
-  recuperació per signatures ni exploració de tot l'espai físic.
-- Reproducció del ZIL, restauració d'ACL, xattrs, fluxos alternatius de SMB,
-  propietaris, permisos originals o dispositius especials. No crea sockets/FIFOs.
-- Recuperació recursiva de **datasets fills** ni recreació dels seus mountpoints.
-  Cada dataset és un object set independent: extreu-los per separat.
-- Barreja de versions de fitxers procedents de TXG diferents en una mateixa
-  execució. Tampoc no fa una recuperació automàtica de parcials d'una altra
-  execució, ni una represa de la destinació existent.
+## 3. Triar amb el teclat i recuperar
 
-Els UID/GID i modes es registren com a valors originals, però no s'apliquen; els
-identificadors poden necessitar resolució FUID. Els fitxers es creen amb 0600 i
-les carpetes amb 0700. S'aplica l'mtime dels fitxers regulars si és representable;
-no es promet equivalència completa de metadades POSIX/ZFS.
+```bash
+sudo python3 zfs_rescue.py select "${FONTS[@]}" \
+  --dataset vol1/DATA --dest /mnt/DESTI_SA/DATA-lot1 -v
+```
 
-Un uberblock amb checksum vàlid no garanteix que totes les seves dades encara
-existeixin. Els blocs antics poden haver estat reutilitzats. El lector també
-valida els checksums dels descendents que visita i registra els que fallen.
-L'arrel del dataset ha de ser llegible per seleccionar un TXG; si només queden
-fragments d'aquesta arrel, aquesta versió pot no arribar a extreure'ls.
+El selector mostra el dataset, el **TXG**, el `root-id`, el destí i la carpeta
+actual. **No copia res fins que revises la selecció i confirmes.**
 
-La combinació per sectors no prova totes les combinacions possibles de corrupció
-silenciosa. Si tots dos discs retornen bytes incorrectes sense error d'E/S en
-sectors diferents, pot no trobar la combinació correcta. Sense un checksum
-coincident, rebutja el bloc.
+| Tecla | Acció |
+|---|---|
+| **↑ / ↓** o `k` / `j` | Moure el cursor. `PgUp` / `PgDn` salten pàgines; `Inici` / `Fi`, als extrems. |
+| **Enter**, → o `l` | **Obrir una carpeta**. Els fitxers no s'obren ni es previsualitzen; els symlinks tampoc no se segueixen. |
+| **Espai** | **Marcar/desmarcar una carpeta sencera o un fitxer individual**. |
+| **←**, Retrocés o `h` | Tornar a la carpeta pare; les marques es conserven. |
+| `i` | Veure la ruta i el destí complets si no caben a la pantalla; no obre el fitxer. Enter o `n` tornen. |
+| **`r`** | Revisar totes les rutes marcades. En aquesta pantalla, **`s` confirma la còpia** i `n` torna al selector. |
+| **`q`** o Esc | Sortir sense copiar ni crear el destí. |
 
-## Seguretat: abast real
+**Una carpeta marcada inclou TOT el seu contingut i totes les subcarpetes**,
+no només el que es veu a la pantalla. No cal entrar-hi per marcar-la. Un fitxer
+marcat només selecciona aquell fitxer. La fila `.` marca tota la carpeta actual;
+a l'arrel, això selecciona **tot el dataset**.
 
-`O_RDONLY` impedeix escriure **mitjançant els descriptors de les fonts d'aquest
-programa**. No bloqueja altres processos, automuntatges, el firmware o canvis que
-un administrador faci als dispositius. La lectura també pot estressar un disc
-avariat: per això es recomanen imatges, preferiblement originals conservats
-offline o protegits contra escriptura. No s'executa cap rescat dels teus discs en
-el procés de preparació d'aquest paquet.
+Les marques signifiquen:
 
-La destinació ha de ser una carpeta nova en un sistema de fitxers sa i separat
-dels discs origen. El programa no sobreescriu una carpeta de rescat existent.
-En Linux comprova l'ascendència de dispositius per a fonts raw i rebutja una
-destinació dependent d'un disc origen, o una dependència que no pot determinar.
-En FreeBSD l'extracció exigeix imatges regulars perquè aquest control de
-dispositius no s'ha implementat. La lectura/prova de dispositius FreeBSD sí que
-disposa de consulta de mida, però no s'ha provat en un sistema FreeBSD real.
+- `[x]`: ruta marcada directament.
+- `[*]`: ja inclosa perquè un antecessor està marcat com a carpeta sencera.
+- `[-]`: carpeta amb alguns descendents seleccionats, però no sencera.
+- `[ ]`: no seleccionada.
 
-Per a inputs que ja són fitxers d'imatge, la separació de mitjans físics és
-responsabilitat de l'operador. Les imatges no s'obren mai per escriure. Mantén les
-fonts immutables mentre duri l'extracció; no executis ddrescue simultàniament sobre
-les mateixes imatges que llegeix el rescatador.
+Si un fitxer està inclòs per una carpeta sencera, primer has de desmarcar
+aquella carpeta per poder triar-ne només alguns descendents. Marcar un pare
+unifica les marques dels fills; no hi ha exclusions dins d'una carpeta marcada.
+**Amb zero marques no es pot iniciar la recuperació.**
 
-Els components de les rutes s'obren amb descriptors de directori i `O_NOFOLLOW`.
-Es rebutgen noms com `..` i `/`; no se segueixen symlinks recuperats. Un symlink
-absolut o que apunta fora de l'arbre es conserva com a tal: tingues-ho present
-quan després naveguis pels fitxers amb altres eines.
+Altres detalls importants:
 
-## Requisits
+- Navegar només llegeix metadades de directoris, objectes i atributs: **no llegeix
+  continguts de fitxers ni destinacions de symlinks**. Marcar una carpeta no en
+  recorre els descendents. Els errors de metadades es mostren; una entrada
+  il·legible o especial no es pot marcar individualment.
+- El TXG escollit es manté durant tota la sessió i la còpia, sense tornar a
+  escanejar. Sense `--txg`, inicialment es pot triar una versió anterior si
+  l'arrel més recent és il·legible. Revisa la capçalera; per repetir un estat,
+  afegeix `--txg TXG_ESCOLLIT --root-id ROOT_ID_ESCOLLIT` amb valors reals.
+- `--path "Fotos"` permet començar en una subcarpeta. Els noms es mostren entre
+  cometes i escapats per protegir el terminal; els bytes originals es conserven.
+  Els noms o camins llargs truncats amb `...` es poden consultar amb `i`.
+- No hi ha catàleg persistent ni previsualització. Es conserva només el directori
+  actual, una petita memòria cau i les marques. Tornar a una carpeta pot implicar
+  rellegir-ne metadades. En sortir, les marques no es desen.
+- Les carpetes **no inclouen datasets fills ni snapshots**: si `list` mostra
+  `vol1/DATA/altre` o `vol1/DATA@nom`, recupera'ls per separat amb `--dataset`.
+- La revisió no calcula recursivament la mida de les carpetes ni garanteix espai
+  suficient. Comprova el destí abans de confirmar; a la referència tens com
+  obtenir una estimació lògica amb `browse`.
+- El selector requereix entrada i sortida connectades a un terminal, no pipes
+  o redireccions. Per automatitzar o desar llistats, utilitza `browse`/`extract`.
 
-- Python 3.10 o posterior; biblioteca estàndard, sense paquets pip obligatoris.
-- Preferiblement Linux, executant el programa com a usuari sense privilegis
-  sobre imatges que pugui llegir. No modifiquis l'appliance TrueNAS per instal·lar
-  aquest paquet: pots treballar en una altra màquina.
-- Sistema de fitxers de destinació POSIX que admeti els noms originals, enllaços
-  durs/simbòlics i fitxers grans. No es recomana FAT/exFAT ni una destinació que
-  canviï majúscules/minúscules o normalitzi noms de manera incompatible.
-- Espai per a les imatges i per a les dades **descomprimides**. Reserva també espai
-  per a parcials i informes. Un error d'escriptura atura l'execució.
+## 4. Resultats i lots
 
-## 1. Preparar imatges, si encara no les tens
+```text
+DATA-lot1/
+├── tree/             # Fitxers complets amb els noms i les rutes originals
+├── incomplete/       # Parcials .part identificats per objecte i ID únic
+└── manifest.jsonl    # Selecció, TXG, atributs, SHA-256, errors i resum
+```
 
-Exemples orientatius de GNU ddrescue en Linux. **Substitueix els identificadors
-permanents i confirma que `/mnt/RESCAT` és emmagatzematge sa.** Els dos fitxers de
-sortida han de ser diferents, nous o corresponents exactament als seus mapes de
-represa. No copiïs mai un membre sobre l'altre.
+Els complets apareixen un a un a `tree/`. **No moguis, esborris ni reanomenis
+entrades mentre s'executa**: poden ser necessàries per crear enllaços durs.
+Quan acabi, comprova una mostra de fitxers amb les seves aplicacions normals.
+
+Un `.part` pot retornar **zeros als intervals perduts: no són dades recuperades**.
+Els esdeveniments `unreadable_range` en registren els offsets i les longituds;
+el parcial no es publica amb el nom original a `tree/`. Els buits legítims
+de fitxers sparse sí que es reprodueixen a partir de metadades verificades.
+
+`completed_supported_scope` significa «sense errors dins de la selecció i
+l'abast suportat», **no** que tot `vol1/DATA` sigui íntegre. El manifest distingeix
+`selected_paths` de `whole_dataset`, enumera les rutes incloses i identifica el
+selector amb `selection_method: "terminal"`. Queden fora ACL, xattrs, altres
+datasets, dades només al ZIL i fitxers absents de les metadades llegibles.
+
+| Sortida | Significat |
+|---|---|
+| `0` | Ordre completada dins del seu abast, o selector cancel·lat abans de copiar. `probe` pot informar que no hi ha GPT vàlida. |
+| `1` | Error fatal: configuració incompatible, cap TXG útil, terminal o destí invàlid, límit de recursos… |
+| `2` | Llistat/extracció parcial; també arguments incorrectes d'argparse. |
+| `130` | Ctrl+C: execució interrompuda, resultats incomplets. |
+
+**Sense resum final, la còpia no s'ha completat.** Una interrupció pot deixar
+`.part` sense entrada final al manifest. Cancel·lar el selector abans de copiar
+només genera l'esdeveniment `cancelled`, sense crear el destí.
+
+Per a una altra selecció o TXG, utilitza **un destí nou**, com `DATA-lot2`.
+No hi ha represa, fusió ni reparació automàtica de parcials d'altres execucions.
+Compara manifestos i hashes abans d'unificar resultats. Pots alliberar espai
+després d'acabar i comprovar un lot, conservant-ne abans les dades en un altre
+mitjà sa.
+
+## Referència
+
+Els detalls següents són desplegables per no interrompre la guia principal.
+
+<details>
+<summary><strong>Imatges ddrescue, mapes i offsets de discs complets</strong></summary>
+
+Fer imatges independents continua sent l'opció més segura. Primera passada en
+Linux, amb identificadors reals i emmagatzematge sa:
 
 ```bash
 sudo ddrescue -n /dev/disk/by-id/ID_DISC_1 /mnt/RESCAT/disc1.img /mnt/RESCAT/disc1.map
 sudo ddrescue -n /dev/disk/by-id/ID_DISC_2 /mnt/RESCAT/disc2.img /mnt/RESCAT/disc2.map
 ```
 
-Aquesta és una primera passada sense scraping ni passades de reintent. No
-afegeixis reintents intensius automàticament a discs que es desconnecten, fan
-sorolls anormals o empitjoren. Els casos de fallada física greu requereixen una
-estratègia específica. Les ordres d'aquest document són exemples per a tu: el
-script Python no executa ddrescue.
+Les sortides han de ser diferents i noves, o correspondre exactament als mapes
+de represa; **mai copiïs un membre sobre l'altre**. `-n` evita scraping i passades
+de reintent: no afegeixis reintents intensius automàticament a discs que empitjoren.
+Una fallada física greu requereix una estratègia específica. El lector Python
+no executa ddrescue.
 
-També pots adquirir imatges de les particions ZFS si ja n'has identificat amb
-certesa els límits. En aquest cas, els offsets del lector són zero i els mapes
-ddrescue han de correspondre a aquestes adquisicions de partició.
+També pots adquirir només les particions ZFS si en coneixes amb certesa els
+límits. Per a **imatges de partició**, defineix `FONTS` així:
 
-## 2. Distingir una imatge de disc d'una imatge de partició
+```bash
+FONTS=(
+  --source /mnt/RESCAT/zfs1.img
+  --source /mnt/RESCAT/zfs2.img
+)
+```
 
-En TrueNAS és habitual que ZFS ocupi una partició, no que comenci al byte zero
-del disc complet. El `+4 MiB` dels DVA és relatiu a l'inici del vdev ZFS, no
-necessàriament al disc físic.
+Els offsets són zero. Afegeix, si en tens, un `--mapfile` d'aquella adquisició
+per font. Amb permisos suficients, les ordres de la guia no necessiten `sudo`.
 
-Per a una imatge de **disc complet**, consulta la GPT:
+Per a **imatges de disc complet**, consulta primer la GPT de cada disc:
 
 ```bash
 python3 zfs_rescue.py probe --source /mnt/RESCAT/disc1.img
 python3 zfs_rescue.py probe --source /mnt/RESCAT/disc2.img
 ```
 
-Si el disc tenia sectors lògics de 4096 bytes, afegeix `--sector-size 4096`.
-El programa valida CRC de capçalera i taula, tant de la GPT principal com de la
-còpia final. No determina automàticament quina partició cal utilitzar ni modifica
-la GPT. Si les còpies discrepen, identifica els límits abans de continuar. Una
-GPT vàlida també pot quedar fora dels sectors recuperats: pots necessitar els
-límits coneguts d'una altra font. No hi ha autodetecció MBR en aquest lector.
+- Amb sectors lògics de 4096 bytes, afegeix `--sector-size 4096`.
+- `probe` verifica CRC de capçalera i taula de les dues còpies GPT; no en modifica
+  cap ni tria automàticament la partició ZFS. Si discrepen, resol els límits abans
+  de continuar. Si queden fora dels sectors adquirits, calen límits coneguts
+  d'una altra font. No hi ha autodetecció MBR.
+- El `+4 MiB` dels DVA és relatiu a l'inici del **vdev ZFS**, no necessàriament
+  al disc físic. ZFS a TrueNAS acostuma a ocupar una partició.
 
-Els camps `offset` i `length` són bytes. Proporciona **un de cada per disc**, en
-el mateix ordre que `--source`. L'offset pot ser diferent entre membres.
+Substitueix els marcadors per nombres **en bytes**, un offset i una longitud per
+font en el mateix ordre; poden ser diferents entre discs:
 
 ```bash
-python3 zfs_rescue.py scan \
-  --source /mnt/RESCAT/disc1.img --source /mnt/RESCAT/disc2.img \
-  --offset OFFSET_1_BYTES --offset OFFSET_2_BYTES \
-  --length LONGITUD_1_BYTES --length LONGITUD_2_BYTES \
+FONTS=(
+  --source /mnt/RESCAT/disc1.img --source /mnt/RESCAT/disc2.img
+  --offset OFFSET_1_BYTES --offset OFFSET_2_BYTES
+  --length LONGITUD_1_BYTES --length LONGITUD_2_BYTES
   --mapfile /mnt/RESCAT/disc1.map --mapfile /mnt/RESCAT/disc2.map
+)
 ```
 
-Substitueix els quatre marcadors per nombres reals. `--length` és la mida de la
-partició/vdev, no la mida de l'input complet. Els mapes utilitzen offsets
-absoluts de l'input de ddrescue; un mapa d'un disc complet no serveix directament
-per a una imatge retallada de la seva partició.
+`--length` és la longitud de la partició/vdev, no de l'input complet. Aquesta
+configuració també serveix per a discs complets raw, amb les precaucions de la guia.
+Repeteix `FONTS` a totes les ordres.
 
-## 3. Escanejar, llistar i comprovar
+Els mapes GNU ddrescue són opcionals però recomanables: només es llegeixen
+intervals `+`. Els seus offsets són absoluts de l'input adquirit: **un mapa de
+disc complet no serveix directament per a una imatge retallada de partició**.
+Si passes mapes, cal un per font; `--mapfile -` significa sense mapa.
+Mantén les fonts immutables: **no executis ddrescue sobre les mateixes imatges
+mentre el lector les utilitza**.
 
-Els exemples següents assumeixen **imatges de partició ZFS**, sense necessitat
-d'offsets. Si són discs complets, repeteix en cada ordre els offsets, longituds
-i mapes correctes del pas anterior. Els mapes són opcionals, però recomanables.
+</details>
+
+<details>
+<summary><strong>TXG, llistats, estimació de mida i extracció sense interfície</strong></summary>
+
+`scan` mostra uberblocks verificats, TXG i hora UTC. `list` enumera datasets i
+snapshots. Per comprovar el MOS i l'arrel d'un dataset:
 
 ```bash
-python3 zfs_rescue.py scan \
-  --source /mnt/RESCAT/zfs1.img --source /mnt/RESCAT/zfs2.img
-
-python3 zfs_rescue.py list \
-  --source /mnt/RESCAT/zfs1.img --source /mnt/RESCAT/zfs2.img
-
-python3 zfs_rescue.py check \
-  --source /mnt/RESCAT/zfs1.img --source /mnt/RESCAT/zfs2.img \
-  --dataset tank/dades
+sudo python3 zfs_rescue.py check "${FONTS[@]}" --dataset vol1/DATA
 ```
 
-Substitueix `tank/dades` pel nom exacte del teu dataset. `list` també mostra
-snapshots; pots seleccionar `tank/dades@nom_snapshot`.
+**`check` no llegeix tots els fitxers ni tots els descendents.** Sense filtres,
+el lector prova TXG de més recent a més antic fins a trobar el MOS i l'arrel
+llegibles. Un TXG anterior representa dades antigues, amb possibles canvis
+posteriors absents; comprova l'esdeveniment `selected`. `--txg` és estricte i
+mai no tria un altre estat; `--max-txg` exclou transaccions posteriors a un límit.
+Si hi ha arrels diferents al mateix TXG, calen `--txg` i `--root-id` de `scan`;
+no es pressuposa que el número més alt sigui el millor.
 
-La sortida és JSONL; els diagnòstics van a stderr. `scan` mostra els uberblocks
-verificats, el TXG i l'hora UTC. **`check` només comprova el MOS i l'arrel del
-dataset; no llegeix tots els fitxers ni acredita una recuperació completa.**
-
-Sense filtres, es proven els TXG en ordre descendent. Si el més recent falla, es
-pot seleccionar un d'anterior: això representa una versió anterior del dataset,
-amb possible absència dels canvis posteriors. Revisa l'esdeveniment `selected`.
-
-Per reproduir exactament una prova, fixa el TXG:
+Llista l'arrel sense copiar fitxers i anota el TXG i el `root-id` reals:
 
 ```bash
-python3 zfs_rescue.py check \
-  --source /mnt/RESCAT/zfs1.img --source /mnt/RESCAT/zfs2.img \
-  --dataset tank/dades --txg TXG_ESCOLLIT
+sudo python3 zfs_rescue.py browse "${FONTS[@]}" \
+  --dataset vol1/DATA --directories-only --human
 ```
 
-Si apareixen arrels diferents per al mateix TXG, el programa exigeix
-`--txg` i `--root-id` de `scan` per evitar una selecció ambigua. No assumeix
-que la transacció més alta sigui la millor.
-
-## 4. Extreure
-
-La carpeta pare de destinació ha d'existir; la carpeta `rescat-txg` encara no.
+Per entrar en una carpeta del mateix estat, substitueix els marcadors:
 
 ```bash
-python3 zfs_rescue.py extract \
-  --source /mnt/RESCAT/zfs1.img --source /mnt/RESCAT/zfs2.img \
-  --dataset tank/dades --txg TXG_ESCOLLIT \
-  --dest /mnt/DESTI_SA/rescat-txg -v
+sudo python3 zfs_rescue.py browse "${FONTS[@]}" \
+  --dataset vol1/DATA --txg TXG_ESCOLLIT --root-id ROOT_ID_ESCOLLIT \
+  --path "Fotos" --human
 ```
 
-Si les imatges tenen sectors no recuperats en llocs complementaris, es pot provar
-una nova execució amb `--sector-recovery` i els dos mapes. Aquesta opció fa més
-lectures; és preferible utilitzar-la sobre imatges. No converteix sectors perduts
-en dades vàlides i pot no rescatar un bloc amb corrupció silenciosa combinada.
+`browse` llegeix només metadades i, per defecte, un nivell. Sense
+`--directories-only` també mostra fitxers i mides; `--recursive` visita els
+descendents i fa més lectures. No desa un índex ni comprova els continguts.
+Tret de `--human`, la sortida és JSONL i els diagnòstics van a stderr.
+Desa qualsevol redirecció **només en emmagatzematge sa**: la fa el shell,
+fora de la protecció de destí del programa.
 
-Hi ha límits defensius: 16 TiB per fitxer, dos milions d'entrades visitades i
-profunditat 256. Els dos primers es poden ajustar amb `--max-file-size` i
-`--max-entries`. El límit de mida de bloc és 32 MiB. El lector Python pot ser lent
-amb volums grans; no s'ha mesurat rendiment en recuperacions de diversos TiB.
+Per estimar la mida d'una carpeta, afegeix `--recursive` a l'ordre anterior.
+`counts.logical_file_bytes` suma mides lògiques dels fitxers visitats, **comptant
+cada ruta**, inclosos hardlinks repetits. Sense recursió només compta el nivell
+llistat. No prediu bytes físics ni recuperables: sparse, enllaços, compressió,
+deduplicació, parcials i metadades alteren l'espai necessari. Reserva marge.
 
-La destinació conté:
+Còpia selectiva sense selector:
+
+```bash
+sudo python3 zfs_rescue.py extract "${FONTS[@]}" \
+  --dataset vol1/DATA --txg TXG_ESCOLLIT --root-id ROOT_ID_ESCOLLIT \
+  --include "Fotos/2020" --include "Documents/nota.txt" \
+  --dest /mnt/DESTI_SA/DATA-lot1 -v
+```
+
+- `--include` és repetible: ruta exacta i descendents, tant carpetes com fitxers.
+  Exigeix `--txg`; repeteix també el `root-id` per reproduir l'estat sense ambigüitat.
+- Les rutes són relatives al dataset: `"Fotos/2020"`, **no** `"/Fotos/2020"` ni
+  `"vol1/DATA/Fotos/2020"`. Utilitza `/`. No hi ha comodins: `"Fotos/*"` és literal.
+- `Fotos` no selecciona `Fotos_backup`. Les seleccions solapades s'unifiquen;
+  es creen antecessors, però no es copien germans exclosos. Sí que es llegeixen
+  metadades d'antecessors, que poden compartir blocs amb entrades excloses.
+- Les rutes inexistents, il·legibles o que travessen symlinks es rebutgen **abans
+  de crear el destí**, també després de confirmar al selector. Un symlink
+  seleccionat es recupera com a enllaç, mai seguint-ne el contingut.
+- **Sense cap `--include`, `extract` intenta recuperar TOT el dataset.**
+  `--include "."` també selecciona tot. Per fer-ho, omet els `--include` de
+  l'exemple i reserva prou espai. Els datasets fills continuen sent independents.
+
+`--sector-recovery` permet provar una altra execució sobre les imatges i els dos
+mapes quan hi ha errors d'E/S complementaris: combina sectors llegibles de
+512 bytes i exigeix el checksum final correcte. Fa més lectures i no prova
+totes les combinacions de corrupció silenciosa. Si les dues còpies retornen
+bytes erronis sense error d'E/S en sectors diferents, pot no trobar el bloc;
+**sense checksum coincident el rebutja**, no el presenta com a recuperat.
+
+</details>
+
+<details>
+<summary><strong>Formats admesos i límits del lector</strong></summary>
+
+El codi adjunt original només desava `objset_phys` del MOS. Aquest lector
+implementa el recorregut fins als fitxers, però no és un recuperador universal.
+
+**Implementat:**
+
+- Fonts `os.O_RDONLY` i lectures `os.pread`; no importa ni munta pools ni executa
+  eines ZFS. Llegeix les quatre etiquetes de cada membre, verifica SHA-256 de
+  configuracions/uberblocks, l'offset verificador relatiu al vdev i tota la ranura.
+- Valida GUID de pool, vdev superior i membres, obté `ashift` i rebutja inputs
+  duplicats o del mateix membre. Necessita etiquetes coherents; no les reconstrueix.
+- DVA i tres emplaçaments del BP, byte order, embedded blocks i indirectes.
+  Verifica cada bloc físic **abans de descomprimir**; errors d'E/S, lectures curtes
+  o checksum incorrecte fan provar altres còpies i DVA.
+- Fletcher2, Fletcher4, SHA-256 i SHA-512/256 quan OpenSSL el proporciona.
+  Sense compressió, LZ4 ZFS —prefix big-endian de quatre bytes—, LZJB, gzip/zlib
+  i ZLE; no necessita el paquet `lz4`.
+- MOS → directoris/datasets/snapshots DSL → object set ZPL → dnodes → ZAP.
+  Micro/fat-ZAP i taules de punters externes; fulles de directori perdudes es
+  poden informar mentre es recuperen les accessibles.
+- Znodes antics, SA amb registres/layouts dinàmics —sense IDs fixos—,
+  spill blocks i dnodes grans. Fitxers regulars, buits legítims, carpetes,
+  hardlinks entre fitxers recuperats i symlinks; noms preservats en bytes en POSIX.
+- Informe JSONL d'objectes, rutes, errors, SHA-256 dels complets i intervals perduts.
+  UID/GID i modes originals es registren però **no s'apliquen**; poden requerir
+  resolució FUID. Fitxers nous amb `0600`, carpetes amb `0700`; s'aplica l'mtime
+  regular si és representable, sense prometre equivalència completa POSIX/ZFS.
+
+**No implementat:**
+
+- Xifrat ZFS o GELI de TrueNAS CORE, claus o desxifrat; ZSTD; Skein, Edon-R,
+  BLAKE3 o blocs amb checksum desactivat. No es presenten com a verificats.
+- Stripe, RAIDZ/dRAID, gang blocks, vdevs indirectes per eliminació, topologies
+  `replacing`/`spare` o diversos vdevs superiors, inclosos possibles logs/especials.
+- Reconstrucció heurística de MOS/ZAP destruïts, fitxers esborrats, carving per
+  signatures o escaneig de tot l'espai físic.
+- Replay del ZIL; restauració d'ACL, xattrs, fluxos alternatius SMB, propietaris
+  o permisos originals; dispositius especials, sockets o FIFOs.
+- Extracció conjunta de datasets fills/recreació dels mountpoints, barreja de TXG
+  o represa/reparació automàtica de parcials d'altres execucions.
+
+Un uberblock vàlid **no garanteix que els seus descendents encara existeixin**:
+blocs antics poden haver estat reutilitzats. Es verifiquen els que es visiten
+i es registren els errors. Cal l'arrel del dataset llegible per triar un TXG;
+fragments d'una arrel destruïda poden quedar fora de l'abast del lector.
+
+Que UFS Explorer pugui llegir el dataset és un bon senyal, no una certificació de
+tots els blocs. Tampoc demostra que una actualització de TrueNAS causi la
+corrupció: la seqüència de fets no prova causalitat, especialment amb errors físics.
+Per a dades insubstituïbles, una eina que ja llegeixi **aquest pool** o un servei
+professional ofereixen més confiança que aquest lector nou; tenir més
+comprovacions que el codi original no el fa més fiable que UFS Explorer.
+
+</details>
+
+<details>
+<summary><strong>Seguretat real i recursos en un equip de 8 GB</strong></summary>
+
+`O_RDONLY` només impedeix escriure mitjançant **els descriptors d'aquest programa**:
+no bloqueja altres processos, un administrador, automuntatges o firmware.
+Llegir estressa els discs; treballa amb imatges i conserva els originals offline
+o protegits contra escriptura, sempre que sigui possible.
+
+En Linux es comprova l'ascendència dels dispositius raw i es rebutja un destí
+dependent d'una font, o una dependència que no es pot determinar. A FreeBSD
+l'extracció exigeix **imatges regulars** perquè no hi ha aquest control; la
+consulta de mida de dispositius està implementada però no provada en FreeBSD real.
+Amb imatges, separar els mitjans físics és responsabilitat teva. Les fonts
+mai s'obren per escriure i han de romandre immutables.
+
+Les escriptures estan ancorades a descriptors de directori amb `O_NOFOLLOW` i
+creació exclusiva. Es rebutgen components com `..` i `/`; no se segueixen
+symlinks recuperats. Un enllaç absolut o que surt de l'arbre es conserva:
+**altres eines sí que el podrien seguir** quan examinis els resultats.
+
+No es carrega el dataset ni un fitxer sencer en RAM. Es processen directoris
+individualment i s'emeten resultats en flux:
+
+| Recurs | Límit / ajust |
+|---|---|
+| Bloc / memòria cau de blocs | 32 MiB / 64 MiB. |
+| Fitxer | 16 TiB; `--max-file-size`. |
+| Entrades visitades | 2.000.000; `--max-entries`. Al selector compta les entrades dels directoris oberts, incloses revisites; la còpia té un recompte independent. |
+| Directori | 100.000 entrades/fulles; `--max-dir-entries`, fins a 2.000.000. També s'aplica a l'arrel. |
+| Profunditat | 256 components. |
+| Rutes pendents / hardlinks | Pressupostos estimats de 64 MiB cadascun; només es recorden hardlinks de fitxers amb més d'un enllaç. |
+| Selector | Un directori, 256 entrades d'atributs en memòria cau i un pressupost estimat de 64 MiB per a marques. |
+
+Augmentar `--max-dir-entries` augmenta memòria i lectures. Si l'arrel supera el
+límit, `--path` a una subcarpeta no evita haver de llegir aquella arrel.
+Els pressupostos de rutes aturen explícitament l'execució; no descarten dades
+per aparentar èxit. **No són un límit estricte de RAM total**: Python, estructures
+ZFS i memòries cau també en consumeixen. No s'ha mesurat una recuperació real
+d'1 TB amb 8 GB ni rendiment de diversos TiB; Python pot ser lent. Comença per
+un lot petit i evita llistats recursius globals innecessaris.
+
+</details>
+
+<details>
+<summary><strong>Estructura del paquet, proves i diagnòstic</strong></summary>
 
 ```text
-rescat-txg/
-  tree/                 # Contingut del dataset amb noms i carpetes originals
-  incomplete/           # Parcials identificats per objecte i ID únic
-  manifest.jsonl        # Resultats, atributs, hashes, errors i resum
+zfs-rescue-modular/
+├── zfs_rescue.py          # Entrada CLI
+├── zfs_reader/
+│   ├── __init__.py        # Paquet
+│   ├── base.py            # Errors, checksums, descompressió, XDR
+│   ├── sources.py         # Fonts de només lectura i mapes ddrescue
+│   ├── blocks.py          # Punters, rèpliques i uberblocks
+│   ├── scan.py            # Etiquetes i candidats
+│   ├── objects.py         # Dnodes, object sets, ZAP
+│   ├── pool.py            # Datasets, snapshots, atributs
+│   ├── selection.py       # Rutes i pressupost de recorregut
+│   ├── browse.py          # Llistat de metadades
+│   ├── tui.py             # Selector interactiu, sense llegir continguts
+│   ├── extract.py         # Destí i extracció
+│   └── commands.py        # Arguments i execució
+├── test_selection.py
+├── test_tui.py
+├── test_zfs_rescue.py
+├── README_CA.md
+├── AUDITORIA_CA.md
+├── SOURCES.md
+├── TEST_RESULTS.txt
+└── SHA256SUMS.txt          # Històric: no valida aquesta revisió
 ```
 
-Un `.part` pot contenir buits en els intervals il·legibles; en llegir-lo, el
-sistema operatiu hi retornarà zeros. **Aquests zeros NO són dades recuperades.**
-Els esdeveniments `unreadable_range` indiquen exactament els intervals; el fitxer
-no es publica al seu nom original a `tree/`. Els buits legítims de fitxers sparse
-sí que es reprodueixen a partir de punters de metadades verificades.
-
-Un resum `completed_supported_scope` significa que no hi ha errors en les
-entrades processades dins de l'abast suportat; no inclou ACL, xattrs, altres
-datasets, contingut només present al ZIL ni fitxers desapareguts de metadades
-anteriors. Si no hi ha un resum final, l'execució no s'ha completat. Una
-interrupció pot deixar `.part` encara no referenciats per una entrada final.
-
-Codis de sortida:
-
-| Codi | Significat |
-|---|---|
-| 0 | Ordre completada dins del seu abast; `probe` pot informar que no hi ha GPT vàlida. |
-| 1 | Error fatal, configuració incompatible, cap TXG útil o error de destinació. |
-| 2 | Extracció parcial amb errors registrats; argparse també utilitza 2 per arguments incorrectes. |
-| 130 | Interrupció de teclat; tracta la sortida com a incompleta. |
-
-Per provar un altre TXG, utilitza una altra carpeta nova. Compara manifestos i
-hashes abans d'unificar resultats; el programa no els barreja automàticament.
-
-## Proves incloses
+**Abans d'utilitzar fonts reals, executa en Linux:**
 
 ```bash
-python3 -m unittest -v test_zfs_rescue
+python3 -B -m unittest -v test_selection test_tui test_zfs_rescue
 ```
 
-Les 20 proves utilitzen exclusivament fitxers temporals. Cobreixen extracció
-sintètica completa, checksums, LZ4, LZJB, ZLE, gzip, endianness, SA dinàmic/spill,
-dnodes grans, indirectes, offsets de partició, GPT/CRC, fallada de còpia, DVA
-alternatiu, errors d'E/S complementaris, mapes ddrescue, parcials, enllaços,
-protecció de rutes, sortida sense espai i invariància de les imatges originals.
+Les proves utilitzen només fitxers temporals sintètics, mai discs físics.
+Cobreixen bytes, checksums i compressió —LZ4 contrastat amb `liblz4` si existeix—,
+endianness, SA dinàmic/spill, dnodes grans, indirectes, offsets, GPT/CRC, DVA/rèpliques,
+E/S complementària, mapes, sparse, enllaços, noms no UTF-8, parcials, protecció de
+rutes, ENOSPC i invariància dels hashes de les fonts. El selector afegeix proves
+de teclat, marques, revisió/confirmació, cancel·lació, límits i curses amb PTY.
 
-Si hi ha `liblz4`, una prova contrasta el vector LZ4 amb el descodificador de la
-biblioteca del sistema. Les imatges de prova estan codificades segons el format
-documentat; **no s'han generat amb un pool ZFS en execució**. Consulta
-`TEST_RESULTS.txt`, `AUDITORIA_CA.md` i `SOURCES.md`.
+**Els resultats i les omissions exactes són a `TEST_RESULTS.txt`.** En Windows
+s'executen proves portables amb E/S i pantalla adaptades: **no validen el kernel
+POSIX ni el terminal real**. Les proves d'integració i curses/PTY s'hi ometen i
+cal reexecutar-les en Linux. Les imatges estan codificades segons el format
+documentat, **no generades per OpenZFS**; tampoc s'han provat discs de l'usuari,
+FreeBSD real o una màquina de recuperació de 8 GB.
 
-Si el lector falla amb el teu cas real, conserva els originals, els mapes, la
-sortida de `scan`, el TXG seleccionat i el diagnòstic exacte. No desactivis els
-checksums per obtenir una aparent recuperació satisfactòria.
+La divisió modular inicial conservava les 36 funcions/classes originals
+—comparació AST—; selecció i interfície les amplien/modifiquen. Les importacions
+són relatives i la injecció d'errors s'aplica al mòdul que fa l'operació.
+Hi ha una prova d'entrada en subprocés des d'una altra carpeta, amb rèplica
+corrupta i hashes de fonts immutables. Els resultats Linux anteriors són
+**històrics**, no una validació d'aquesta revisió.
+
+`SHA256SUMS.txt` s'ha deixat intacte i **està desactualitzat**: no l'utilitzis
+per verificar aquests fitxers. A FreeBSD, `sha256 nom_del_fitxer` calcula un hash.
+Consulta també [l'auditoria](AUDITORIA_CA.md) i les [fonts del format](SOURCES.md).
+
+Si falla el cas real, conserva originals, mapes, sortida de `scan`, TXG/root-id i
+diagnòstic exacte. No desactivis checksums per obtenir una aparent recuperació
+satisfactòria. Cal contrastar una mostra i el manifest amb dades conegudes o
+una eina que llegeixi el mateix pool; no hi ha garantia de recuperació.
+
+</details>

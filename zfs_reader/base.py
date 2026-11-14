@@ -24,6 +24,11 @@ class Unsupported(RescueError):
     pass
 
 
+class ResourceLimit(Unsupported):
+    """Stop rather than accumulating unbounded traversal bookkeeping."""
+    pass
+
+
 class Corrupt(RescueError):
     pass
 

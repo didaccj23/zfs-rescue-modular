@@ -3,29 +3,32 @@
 Fixtures are independently encoded from the documented OpenZFS field layouts.
 They are NOT images produced by a running ZFS implementation.
 """
+import os
+import unittest
+
 import contextlib
 import ctypes
 import ctypes.util
 import errno
-import fcntl
 import hashlib
 import io
 import json
-import os
 from pathlib import Path
 import stat
 import struct
 import tempfile
 import subprocess
 import sys
-import unittest
 from unittest.mock import patch
 import uuid
 import zlib
 
 from zfs_reader import base, blocks, objects, commands
-from zfs_reader import sources as source_io
 from zfs_reader import extract as extraction
+
+if os.name == "posix":
+    import fcntl
+    from zfs_reader import sources as source_io
 
 
 def packed_string(value):
@@ -307,6 +310,7 @@ class Fixture:
             file.write(value)
 
 
+@unittest.skipUnless(os.name == "posix", "POSIX integration requires Linux/FreeBSD")
 class RescueTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -640,6 +644,55 @@ class RescueTests(unittest.TestCase):
         self.assertEqual(before, [hashlib.sha256(p.read_bytes()).digest() for p in fixture.paths])
         rows = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertGreater(rows[-1]["reader"].get("replica_fallbacks", 0), 0)
+
+    def test_browse_never_reads_regular_file_payloads(self):
+        fixture = Fixture(self.directory)
+        for index in (0, 1):
+            fixture.damage(index, fixture.payload_offsets["hello"])
+            fixture.damage(index, fixture.payload_offsets["binary"])
+        before = [hashlib.sha256(p.read_bytes()).digest() for p in fixture.paths]
+        code, rows = self.run_cli(["browse", *fixture.source_args(), "--dataset", "tank/rescue",
+                                  "--recursive"])
+        self.assertEqual(code, 0, rows)
+        self.assertEqual(rows[-1]["status"], "metadata_listed")
+        self.assertTrue(any(row.get("path") == "folder/hello.txt" for row in rows))
+        self.assertEqual(before, [hashlib.sha256(p.read_bytes()).digest() for p in fixture.paths])
+
+    def test_selective_extraction_ignores_corrupt_unselected_file(self):
+        fixture = Fixture(self.directory)
+        for index in (0, 1):
+            fixture.damage(index, fixture.payload_offsets["binary"])
+        before = [hashlib.sha256(p.read_bytes()).digest() for p in fixture.paths]
+        output = self.directory / "selected"
+        code, rows = self.run_cli(["extract", *fixture.source_args(), "--dataset", "tank/rescue",
+                                  "--txg", "100", "--include", "folder/hello.txt",
+                                  "--include", "empty", "--dest", str(output)])
+        self.assertEqual(code, 0, rows)
+        self.assertEqual((output / "tree/folder/hello.txt").read_bytes(), b"A" * 512)
+        self.assertEqual((output / "tree/empty").read_bytes(), b"")
+        self.assertEqual(sorted(p.name for p in (output / "tree").iterdir()), ["empty", "folder"])
+        self.assertEqual(len(list((output / "tree/folder").iterdir())), 1)
+        self.assertEqual(rows[-1]["scope"], "selected_paths")
+        self.assertEqual(before, [hashlib.sha256(p.read_bytes()).digest() for p in fixture.paths])
+
+    def test_missing_selected_path_does_not_create_destination(self):
+        fixture = Fixture(self.directory)
+        output = self.directory / "not-created"
+        code, _ = self.run_cli(["extract", *fixture.source_args(), "--dataset", "tank/rescue",
+                               "--txg", "100", "--include", "missing", "--dest", str(output)])
+        self.assertEqual(code, 1)
+        self.assertFalse(output.exists())
+
+    def test_selective_folder_preserves_hardlinks_inside_selection(self):
+        fixture = Fixture(self.directory)
+        output = self.directory / "links"
+        code, rows = self.run_cli(["extract", *fixture.source_args(), "--dataset", "tank/rescue",
+                                  "--txg", "100", "--include", "folder", "--include", "alias",
+                                  "--dest", str(output)])
+        self.assertEqual(code, 0, rows)
+        self.assertEqual((output / "tree/alias").stat().st_ino,
+                         (output / "tree/folder/hello.txt").stat().st_ino)
+        self.assertFalse((output / "tree/short").exists())
 
 if __name__ == "__main__":
     unittest.main()
