@@ -11,7 +11,8 @@ import sys
 import uuid
 from collections import Counter
 
-from .base import LOG, MAX_ENTRIES, RescueError, Unsupported, checked_name, require
+from .base import LOG, MAX_ENTRIES, RescueError, ResourceLimit, Unsupported, checked_name, require
+from .selection import MAX_DIR_ENTRIES, PendingPaths, Selection
 
 def device_ancestors(dev):
     """Linux block device ancestry, including partitions and stacked devices."""
@@ -123,11 +124,15 @@ def write_all(fd, data):
         view = view[count:]
 
 
-def extract(fs, dest, max_file_size=16 << 40, max_entries=MAX_ENTRIES):
+def extract(fs, dest, max_file_size=16 << 40, max_entries=MAX_ENTRIES,
+            selection=None, max_dir_entries=MAX_DIR_ENTRIES):
+    selection = selection if selection is not None else Selection()
     stats = Counter()
-    stack = [(fs.root, (), 0)]
+    stack = PendingPaths()
+    stack.push(fs.root, (), 0)
     directories = set()
     hardlinks = {}
+    hardlink_bytes = 0
     visited = 0
     while stack:
         number, parts, depth = stack.pop()
@@ -146,14 +151,20 @@ def extract(fs, dest, max_file_size=16 << 40, max_entries=MAX_ENTRIES):
                     with dest.directory(parts[:-1]) as parentfd:
                         os.mkdir(parts[-1], 0o700, dir_fd=parentfd)
                 errors = []
-                entries = fs.os.zap(number, errors)
+                entries = fs.os.zap(number, errors, max_entries=max_dir_entries)
                 for name, value in reversed(sorted(entries.items())):
+                    child_parts = parts + (name,)
+                    if not selection.includes(child_parts):
+                        stats["selection_skipped_entries"] += 1
+                        continue
                     try:
                         checked_name(name)
                         require(len(value) == 1, "Invalid directory ZAP value")
                         child = value[0] & ((1 << 48) - 1)
                         require(child != 0, "Zero directory object number")
-                        stack.append((child, parts + (name,), depth + 1))
+                        stack.push(child, child_parts, depth + 1)
+                    except ResourceLimit:
+                        raise
                     except RescueError as exc:
                         errors.append(f"Entry {name!r}: {exc}")
                 if errors:
@@ -214,12 +225,20 @@ def extract(fs, dest, max_file_size=16 << 40, max_entries=MAX_ENTRIES):
                     dest.emit(event="entry", status="partial", missing_bytes=missing,
                               partial_file="incomplete/" + os.fsdecode(temporary), **record)
                 else:
+                    cost = 0
+                    if attrs.get("links", 1) > 1:
+                        cost = 256 + sum(64 + len(part) for part in parts)
+                        if hardlink_bytes + cost > 64 << 20:
+                            raise ResourceLimit("Hardlink path memory budget exceeded; extract a smaller selection")
                     with dest.directory(parts[:-1]) as parentfd:
                         os.link(temporary, parts[-1], src_dir_fd=dest.partsfd, dst_dir_fd=parentfd,
                                 follow_symlinks=False)
                     os.unlink(temporary, dir_fd=dest.partsfd)
                     result_hash = digest.hexdigest()
-                    hardlinks[number] = parts, result_hash
+                    # Single-link files need no long-lived path bookkeeping.
+                    if cost:
+                        hardlinks[number] = parts, result_hash
+                        hardlink_bytes += cost
                     stats["complete_files"] += 1
                     stats["complete_bytes"] += size
                     dest.emit(event="entry", status="complete", sha256=result_hash, **record)
@@ -237,6 +256,8 @@ def extract(fs, dest, max_file_size=16 << 40, max_entries=MAX_ENTRIES):
                 dest.emit(event="entry", status="symlink", target=os.fsdecode(target), target_hex=target.hex(), **record)
             else:
                 raise Unsupported(f"Special inode mode {mode:o}; device nodes, sockets and FIFOs are not created")
+        except ResourceLimit:
+            raise
         except RescueError as exc:
             stats["errors"] += 1
             dest.emit(event="entry", status="failed", error=str(exc), **record)

@@ -4,7 +4,7 @@ import struct
 from collections import OrderedDict
 
 from .blocks import BP
-from .base import MAX_BLOCK, MAX_ENTRIES, RescueError, require, u64, unpack
+from .base import MAX_BLOCK, MAX_ENTRIES, RescueError, ResourceLimit, require, u64, unpack
 
 class Dnode:
     def __init__(self, raw, endian, reader):
@@ -101,8 +101,8 @@ class ObjectSet:
         self.nodes[number] = node
         return node
 
-    def zap(self, number, errors=None):
-        return read_zap(self.node(number), errors)
+    def zap(self, number, errors=None, max_entries=MAX_ENTRIES):
+        return read_zap(self.node(number), errors, max_entries)
 
 
 def scalar(values, name):
@@ -111,7 +111,7 @@ def scalar(values, name):
     return value[0]
 
 
-def read_zap(node, errors=None):
+def read_zap(node, errors=None, max_entries=MAX_ENTRIES):
     """Read live entries only. A supplied errors list permits surviving fat-ZAP leaves."""
     head = node.block(0)
     data, endian = head.data, head.endian
@@ -121,7 +121,8 @@ def read_zap(node, errors=None):
 
     def add(name, value):
         require(name and b"\0" not in name and name not in values, "Invalid/duplicate ZAP name")
-        require(len(values) < MAX_ENTRIES, "ZAP entry limit exceeded")
+        if len(values) >= max_entries:
+            raise ResourceLimit("ZAP entry limit exceeded; choose another subtree or review --max-dir-entries")
         values[name] = value
 
     if typ == (1 << 63) + 3:
@@ -137,15 +138,24 @@ def read_zap(node, errors=None):
             "Not a micro/fat ZAP header")
     table, nblocks, shift, nextblk, copied = unpack(endian + "5Q", data, 16)
     nleaves, nentries = unpack(endian + "2Q", data, 64)
-    require(shift <= 24 and nleaves <= MAX_ENTRIES and nentries <= MAX_ENTRIES, "Fat ZAP limits exceeded")
+    require(shift <= 24, "Fat ZAP pointer table limit exceeded")
+    if nleaves > max_entries or nentries > max_entries:
+        raise ResourceLimit("Fat ZAP entry/leaf limit exceeded; review --max-dir-entries")
     # ZAP_FLAG_UINT64_KEY requires different name decoding; never guess.
     require(not (u64(data, 96, endian) & 2), "ZAP with uint64 keys unsupported")
     count = 1 << shift
     leaves = set()
+
+    def add_pointers(raw, order):
+        for (pointer,) in struct.iter_unpack(order + "Q", raw):
+            leaves.add(pointer)
+            if len(leaves) > max_entries:
+                raise ResourceLimit("ZAP leaf pointer limit exceeded")
+
     if nblocks == 0:
         require(table == 0 and count * 8 <= len(data) // 2, "Invalid embedded ZAP pointer table")
         pointers = data[len(data) // 2:len(data) // 2 + count * 8]
-        leaves.update(x[0] for x in struct.iter_unpack(endian + "Q", pointers))
+        add_pointers(pointers, endian)
     else:
         require(nblocks * node.blocksize == count * 8 and nblocks <= 262144,
                 "Invalid external ZAP pointer table")
@@ -154,7 +164,9 @@ def read_zap(node, errors=None):
             try:
                 block = node.block(blockid)
                 require(len(block.data) == node.blocksize, "Truncated ZAP pointer table")
-                leaves.update(x[0] for x in struct.iter_unpack(block.endian + "Q", block.data))
+                add_pointers(block.data, block.endian)
+            except ResourceLimit:
+                raise
             except RescueError as exc:
                 if errors is None:
                     raise
@@ -168,6 +180,8 @@ def read_zap(node, errors=None):
             block = node.block(blockid)
             for name, value in parse_zap_leaf(block).items():
                 add(name, value)
+        except ResourceLimit:
+            raise
         except RescueError as exc:
             if errors is None:
                 raise

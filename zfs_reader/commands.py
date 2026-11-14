@@ -4,16 +4,19 @@ import argparse
 import datetime
 import json
 import logging
+import os
 import stat
 import uuid
 import zlib
 from collections import Counter
 
-from .base import Corrupt, LOG, MAX_BLOCK, MAX_ENTRIES, RescueError, require, u64, unpack
+from .base import Corrupt, LOG, MAX_BLOCK, MAX_ENTRIES, RescueError, ResourceLimit, require, u64, unpack
+from .browse import browse
 from .extract import Destination, extract
 from .pool import PoolView
-from .sources import Source
 from .scan import scan
+from .selection import MAX_DIR_ENTRIES, Selection
+from .tui import choose, ensure_terminal
 
 def probe_gpt(source, sector_size):
     """Read both GPTs with header/table CRC validation. Never modify either."""
@@ -65,7 +68,8 @@ def integer(text):
 
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=("probe", "scan", "list", "check", "extract"))
+    parser.add_argument("command", choices=("probe", "scan", "list", "check", "browse", "select", "extract"),
+                        help="select: interactive folder/file picker, then confirmed extraction")
     parser.add_argument("--source", action="append", required=True, help="Mirror image or leaf partition; repeat for member 2")
     parser.add_argument("--offset", action="append", type=integer, help="Vdev start in bytes, one per source; default all zero")
     parser.add_argument("--length", action="append", type=integer, help="Vdev/partition length, one per source; default to end")
@@ -74,11 +78,19 @@ def cli(argv=None):
     parser.add_argument("--txg", type=integer, help="Only try this exact TXG; never silently choose another")
     parser.add_argument("--max-txg", type=integer, help="Only try TXGs <= this value")
     parser.add_argument("--root-id", help="Select a root_id from scan if a TXG has conflicting roots")
-    parser.add_argument("--dest", help="NEW directory on healthy storage; parent must exist")
+    parser.add_argument("--dest", help="select/extract: NEW directory on healthy storage; parent must exist")
+    parser.add_argument("--path", help="browse/select: dataset-relative starting directory (default '.')")
+    parser.add_argument("--recursive", action="store_true", help="browse: descend into subdirectories; metadata only")
+    parser.add_argument("--directories-only", action="store_true", help="browse: display only directories")
+    parser.add_argument("--human", action="store_true", help="browse: readable text instead of JSONL")
+    parser.add_argument("--include", action="append",
+                        help="extract: exact dataset-relative path and descendants; repeat to select more; requires --txg")
     parser.add_argument("--sector-recovery", action="store_true", help="Try readable 512-byte sectors after whole-copy failures")
     parser.add_argument("--sector-size", type=int, choices=(512, 4096), default=512, help="GPT logical sector size for probe")
     parser.add_argument("--max-file-size", type=integer, default=16 << 40, help="Maximum extracted file bytes (default 16 TiB)")
     parser.add_argument("--max-entries", type=integer, default=MAX_ENTRIES, help="Traversal safety bound")
+    parser.add_argument("--max-dir-entries", type=integer, default=MAX_DIR_ENTRIES,
+                        help="Maximum entries/leaves in a visited directory (default 100000, maximum 2000000)")
     parser.add_argument("-v", "--verbose", action="count", default=0)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose > 1 else logging.INFO if args.verbose else logging.WARNING,
@@ -89,14 +101,47 @@ def cli(argv=None):
         value = getattr(args, key)
         if value is not None and len(value) != len(args.source):
             parser.error(f"--{key} must be supplied once per source")
-    if args.command in ("check", "extract") and not args.dataset:
-        parser.error("--dataset is required for check/extract")
-    if args.command == "extract" and not args.dest:
-        parser.error("--dest is required for extract")
-    if args.dest and args.command != "extract":
-        parser.error("--dest is only used by extract")
+    if args.command in ("check", "browse", "select", "extract") and not args.dataset:
+        parser.error("--dataset is required for check/browse/select/extract")
+    if args.command in ("select", "extract") and not args.dest:
+        parser.error("--dest is required for select/extract")
+    if args.dest and args.command not in ("select", "extract"):
+        parser.error("--dest is only used by select/extract")
+    if args.path is not None and args.command not in ("browse", "select"):
+        parser.error("--path is only used by browse/select")
+    if args.command != "browse" and (args.recursive or args.directories_only or args.human):
+        parser.error("--recursive, --directories-only and --human are only used by browse")
+    if args.include is not None:
+        if args.command != "extract":
+            parser.error("--include is only used by extract")
+        if args.txg is None:
+            parser.error("Selective extraction requires --txg from browse/check; do not change dataset state silently")
+    if not 1 <= args.max_dir_entries <= MAX_ENTRIES or args.max_entries < 1:
+        parser.error("--max-dir-entries must be 1..2000000; --max-entries must be positive")
+
+    def output(record):
+        if args.command != "browse" or not args.human:
+            print(json.dumps(record, ensure_ascii=True))
+        elif record["event"] == "pool":
+            print("Pool: " + json.dumps(record["pool"], ensure_ascii=True))
+        elif record["event"] == "selected":
+            print(f"TXG: {record['txg']}  root-id: {record['root_id']}")
+            print("TYPE       LOGICAL BYTES  DATASET-RELATIVE PATH (quoted)")
+        elif record["event"] == "entry":
+            size = str(record["logical_size"]) if record["logical_size"] is not None else "-"
+            print(f"{record['kind']:<10} {size:>13}  {json.dumps(record['path'], ensure_ascii=True)}")
+        else:
+            print(json.dumps(record, ensure_ascii=True))
+
     sources, destination = [], None
     try:
+        selection = Selection(args.include)
+        # Keep --help and argument validation usable without importing POSIX-only fcntl.
+        if os.name != "posix":
+            raise OSError("Reading/extraction requires POSIX (preferably Linux), not native Windows")
+        terminal = ensure_terminal() if args.command == "select" else None
+        from .sources import Source
+
         for i, path in enumerate(args.source):
             source = Source(path, args.offset[i] if args.offset else 0,
                             args.length[i] if args.length else None,
@@ -109,7 +154,7 @@ def cli(argv=None):
                 print(json.dumps(probe_gpt(source, args.sector_size), ensure_ascii=True))
             return 0
         info, candidates = scan(sources)
-        print(json.dumps({"event": "pool", **info}, ensure_ascii=True))
+        output({"event": "pool", **info})
         candidates = [ub for ub in candidates if (args.txg is None or ub.txg == args.txg)
                       and (args.max_txg is None or ub.txg <= args.max_txg)
                       and (args.root_id is None or ub.public()["root_id"] == args.root_id)]
@@ -126,19 +171,21 @@ def cli(argv=None):
         for ub in candidates:
             try:
                 attempted = PoolView(sources, info, ub, args.sector_recovery)
-                if args.command in ("check", "extract"):
+                if args.command in ("check", "browse", "select", "extract"):
                     filesystem = attempted.dataset(args.dataset)
                     attrs = filesystem.attributes(filesystem.os.node(filesystem.root))
                     require(stat.S_ISDIR(attrs["mode"]), "Dataset root mode is not directory")
-                    filesystem.os.zap(filesystem.root)  # validate root directory before committing to this TXG
+                    filesystem.os.zap(filesystem.root, max_entries=args.max_dir_entries)
                 view = attempted
                 break
+            except ResourceLimit:
+                raise
             except RescueError as exc:
                 LOG.warning("Reject TXG %d: %s", ub.txg, exc)
         require(view is not None, "No requested TXG has a readable MOS/target root with supported formats")
         selected = {"event": "selected", **view.uber.public(), "dataset": args.dataset,
                     "validation": "MOS and target root only; not a full dataset integrity test"}
-        print(json.dumps(selected, ensure_ascii=True))
+        output(selected)
         if args.command == "list":
             for dataset in view.datasets():
                 print(json.dumps(dataset, ensure_ascii=True))
@@ -147,13 +194,44 @@ def cli(argv=None):
             print(json.dumps({"event": "check", "status": "root_readable", "root_object": filesystem.root,
                               "note": "File contents and descendant directories have not all been read."}))
             return 0
+        if args.command == "browse":
+            stats = browse(filesystem, lambda **row: output(row),
+                           path=args.path if args.path is not None else ".",
+                           recursive=args.recursive, directories_only=args.directories_only,
+                           max_entries=args.max_entries, max_dir_entries=args.max_dir_entries)
+            output({"event": "summary", "status": "partial" if stats.get("errors") else "metadata_listed",
+                    "counts": stats,
+                    "note": "Metadata only, NOT verified file contents. Logical bytes count each listed file path; "
+                            "not a prediction of recoverable or physical bytes. Child datasets are separate."})
+            return 2 if stats.get("errors") else 0
+        selective = args.command == "select" or args.include is not None
+        if args.command == "select":
+            selection = choose(filesystem, args.dataset, selected, args.dest,
+                               path=args.path if args.path is not None else ".",
+                               max_entries=args.max_entries, max_dir_entries=args.max_dir_entries,
+                               terminal=terminal)
+            if selection is None:
+                output({"event": "cancelled", "status": "cancelled", "note": "No destination was created."})
+                return 0
+            output({"event": "selection_confirmed", "selected_paths": len(selection.paths),
+                    "txg": view.uber.txg, "destination": args.dest})
+        # Reject misspellings, missing paths and symlink traversal before creating output.
+        if selective:
+            selection.validate(filesystem, args.max_dir_entries)
         destination = Destination(args.dest, sources)
         destination.emit(event="run", version=1, pool=info, selected=selected,
-                         started_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                         limitations="One dataset/TXG; no child datasets, ACL/xattr restore or ZIL replay. See README_CA.md.")
-        stats = extract(filesystem, destination, args.max_file_size, args.max_entries)
+                          started_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                          scope="selected_paths" if selective else "whole_dataset",
+                          selection_method="terminal" if args.command == "select" else "paths" if selective else "all",
+                          included_paths=[{"path": os.fsdecode(b"/".join(parts)) or ".",
+                                           "path_bytes_hex": b"/".join(parts).hex()}
+                                          for parts in selection.paths],
+                          limitations="One dataset/TXG; no child datasets, ACL/xattr restore or ZIL replay. See README_CA.md.")
+        stats = extract(filesystem, destination, args.max_file_size, args.max_entries,
+                        selection, args.max_dir_entries)
         result = {"event": "summary", "status": "partial" if stats.get("errors") else "completed_supported_scope",
                   "counts": stats, "reader": dict(view.reader.stats),
+                  "scope": "selected_paths" if selective else "whole_dataset",
                   "sources": [{"path": s.path, "stats": dict(s.stats)} for s in sources],
                   "destination": destination.path}
         destination.emit(**result)

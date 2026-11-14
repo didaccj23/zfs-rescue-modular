@@ -1,3 +1,88 @@
+VALIDACIO ACTUAL: selector de terminal i README reorganitzat (2026-11-14)
+Entorn executat: Windows, Python 3.9.13.
+La recuperacio continua destinada a Python >= 3.10 i POSIX, preferiblement Linux.
+
+Ordre final: python -B -m unittest discover -q
+Resultat observat: Ran 93 tests in 0.705s -- OK (skipped=26)
+Tambe superada la suite explicita:
+  python -B -m unittest -q test_selection test_tui test_zfs_rescue
+Desglossament: 67 proves portables superades; 26 proves POSIX omeses.
+33 proves portables noves a test_tui.py; les 34 anteriors continuen superades.
+
+Cobertura nova:
+- Navegacio amb Enter/fletxes, retorn al pare, paginacio i redimensionament.
+- Carpetes senceres i fitxers individuals, marques entre directoris, antecessors,
+  seleccions solapades, carpetes buides, symlinks i noms amb bytes no UTF-8.
+- Cap lectura de contingut o desti de symlink durant navegacio o marcatge.
+- Revisio, retorn al selector i confirmacio separada; una seleccio buida mai
+  equival a recuperar-ho tot. Cancel-lacio/Ctrl+C no creen cap destinacio.
+- Errors parcials de metadades visibles; cicles, noms insegurs i entrades
+  especials o corruptes rebutjades, cache d'atributs limitada i marques acotades.
+- Rutes llargues consultables completes i text del disc escapat al terminal.
+- Mateix filesystem/TXG en seleccionar i copiar; validacio de la seleccio
+  abans de crear el desti i registre selection_method="terminal" al manifest.
+- Error sense TTY abans d'obrir fonts, falta de curses, restauracio de pantalla
+  i log davant d'errors/interrupcio, i tancament de fonts en cancel-lar.
+- Una imatge ZFS sintetica amb replica corrupta verifica recuperacio de carpeta
+  completa, bytes, nom no UTF-8, fallback de checksum i hashes de fonts invariants.
+- El filtratge amb cerca binaria es contrasta amb la regla per components.
+
+Limitacions:
+- Les 24 proves POSIX de lectura/extraccio i les dues noves de terminal real
+  curses/PTY NO s'han executat en aquest entorn Windows. Les pantalles portables
+  son dobles explicits; no demostren el funcionament del terminal o kernel real.
+- Abans d'utilitzar fonts reals, executar en Linux:
+    python3 -B -m unittest -v test_selection test_tui test_zfs_rescue
+- Sense validacio amb pools creats per OpenZFS, discs fisics, FreeBSD real,
+  rendiment a escala TiB ni un equip de recuperacio de 8 GB. No hi ha garantia.
+- Els resultats seguents corresponen a revisions anteriors, no a una execucio
+  Linux d'aquesta revisio. SHA256SUMS.txt continua desactualitzat.
+
+======================================================================
+RESULTATS ANTERIORS: seleccio per ordres, abans del selector de terminal
+======================================================================
+
+VALIDACION ANTERIOR: navegacion y extraccion selectiva (2026-11-14)
+Entorno disponible: Windows, Python 3.9 (la recuperacion sigue documentada para
+Python >= 3.10 y POSIX, preferentemente Linux).
+
+Orden: python -B -m unittest -v test_selection test_zfs_rescue
+Resultado observado: Ran 58 tests in 0.599s -- OK (skipped=24)
+Desglose: 34 pruebas portables superadas; 24 pruebas POSIX omitidas.
+Los mensajes ERROR de ruta inexistente y limite de directorio son fallos
+inyectados deliberadamente y se comprueba su resultado esperado.
+
+Cobertura nueva ejecutada:
+- Seleccion por componentes, rutas solapadas, carpetas vacias y varios lotes
+  independientes; rechazo de rutas inseguras, inexistentes o a traves de symlinks.
+- Navegacion superficial/recursiva, filtros de carpetas y salida humana/JSONL,
+  sin lectura de contenidos ni destinos de symlinks.
+- Extraccion de carpetas y archivos concretos, preservacion de enlaces duros,
+  omision de hermanos y aislamiento de datos corruptos fuera de la seleccion.
+- Parciales con intervalos ilegibles y hashes de resultados.
+- Limites de entradas de ZAP, rutas pendientes y validacion de argumentos;
+  prueba con 20.000 entradas excluidas: pico de asignaciones trazadas < 32 MiB
+  durante la operacion (no es una medicion RSS ni incluye las fixtures previas).
+- CLI con dobles explicitos de fuentes/destino y exigencia de TXG fijo.
+- Seis pruebas adicionales usan las imagenes sinteticas originales con lectura
+  de formato ZFS, checksums y MOS/DSL/ZPL reales del lector, replica corrupta,
+  endianess, offsets, sparse e invariancia de hashes de las imagenes.
+  SOLO su E/S de imagen/destino se adapta para poder probarla en Windows.
+
+Limites de esta ejecucion:
+- No valida el kernel POSIX, O_RDONLY/O_NOFOLLOW, dir_fd, dispositivos raw,
+  seguridad de ascendencia de destino ni ENOSPC real.
+- Las 20 pruebas POSIX originales y cuatro nuevas de integracion estan
+  disponibles, pero NO se han reejecutado en Linux para esta modificacion.
+- Ejecutar en Linux antes de usar fuentes reales:
+    python3 -m unittest -v test_selection test_zfs_rescue
+- No hay validacion con un pool OpenZFS real, medicion en un equipo de 8 GB ni
+  garantia de recuperacion. Los resultados Linux de abajo son HISTORICOS.
+
+======================================================================
+RESULTADOS HISTORICOS DE LA VERSION MODULAR ORIGINAL (sin seleccion)
+======================================================================
+
 Validacio del paquet zfs-rescue
 Data de preparacio: 2026-11-11
 Entorn executat: Linux, Python 3.12
