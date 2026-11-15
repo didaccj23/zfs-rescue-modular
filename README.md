@@ -152,7 +152,8 @@ actual. **No copia res fins que revises la selecció i confirmes.**
 | **←**, Retrocés o `h` | Tornar a la carpeta pare; les marques es conserven. |
 | `i` | Veure la ruta i el destí complets si no caben a la pantalla; no obre el fitxer. Enter o `n` tornen. |
 | **`r`** | Revisar totes les rutes marcades. En aquesta pantalla, **`s` confirma la còpia** i `n` torna al selector. |
-| **`q`** o Esc | Sortir sense copiar ni crear el destí. |
+| **Esc** | Demana si vols sortir. Només `s` confirma; qualsevol altra tecla torna a la mateixa pantalla sense perdre les marques. |
+| **`q`** | Sortir directament sense copiar ni crear el destí. |
 
 **Una carpeta marcada inclou TOT el seu contingut i totes les subcarpetes**,
 no només el que es veu a la pantalla. No cal entrar-hi per marcar-la. Un fitxer
@@ -196,6 +197,20 @@ Altres detalls importants:
   o redireccions. Per automatitzar o desar llistats, utilitza `browse`/`extract`.
 
 ## 4. Resultats i lots
+
+Durant la còpia, `select` i `extract` mostren **les 5 últimes rutes o avisos**
+en una zona que es va actualitzant al terminal, sense afegir una línia nova
+per cada fitxer a l'historial. `Recuperant:` indica la ruta que es comença a
+processar (també carpetes antecessores), **no que ja s'hagi recuperat bé**.
+Un fitxer gran pot mantenir la mateixa ruta durant una estona; no hi ha
+percentatge ni estimació de temps. El resultat definitiu és al manifest.
+
+El progrés va a **stderr**, només si és un terminal compatible, sense
+necessitar `-v`. Amb stderr redirigit, `TERM=dumb` o un terminal massa petit
+no s'activa; si el terminal canvia de mida, deixa de repintar per no sobreescriure
+text anterior. Els avisos de logging comparteixen la zona mentre dura la còpia;
+el resum final es mostra després. **stdout continua sent JSONL** i el manifest
+no canvia. Una fallada d'escriptura del progrés no interromp la recuperació.
 
 ```text
 DATA-lot1/
@@ -496,6 +511,7 @@ zfs-rescue-modular/
 │   ├── browse.py          # Llistat de metadades
 │   ├── tui.py             # Selector interactiu, sense llegir continguts
 │   ├── wizard.py          # Assistent de fonts, dataset i destí pel terminal
+│   ├── progress.py        # Progrés de recuperació al terminal
 │   ├── extract.py         # Destí i extracció
 │   └── commands.py        # Arguments i execució
 ├── tests/
@@ -503,6 +519,7 @@ zfs-rescue-modular/
 │   ├── test_selection.py
 │   ├── test_tui.py
 │   ├── test_wizard.py
+│   ├── test_progress.py
 │   └── test_zfs_rescue.py
 ├── README.md
 ├── AUDITORIA_CA.md

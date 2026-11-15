@@ -325,6 +325,37 @@ class ScreenTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertTrue(any("Segur que vols sortir?" in frame for frame in frames))
 
+    def test_escape_any_key_except_lowercase_s_keeps_marks_and_cursor(self):
+        for key in ("n", "S", "q", "\n", "\x1b", " ", Terminal.KEY_DOWN, Terminal.KEY_RESIZE):
+            with self.subTest(key=key):
+                picker = tui.Picker(FakeFilesystem())
+                terminal = Terminal(["j", " ", "\x1b", key, "q"])
+                result = tui._loop(terminal.screen, terminal, picker, "pool/ds",
+                                   dict(txg=1, root_id="root"), "new")
+                self.assertIsNone(result)
+                self.assertEqual(picker.marks.paths, [(b"Fotos",)])
+                self.assertEqual(picker.entry(picker.cursor).parts, (b"Fotos",))
+                self.assertIn("[x]", terminal.screen.frames[-1])
+
+    def test_escape_confirmation_in_review_details_and_small_terminal(self):
+        cases = [
+            (["j", " ", "r", "\x1b", "n", "s"], "REVISAR I CONFIRMAR"),
+            (["j", " ", "i", "\x1b", "n", "n", "r", "s"], "RUTES COMPLETES"),
+            (["j", " ", "r", "i", "\x1b", "n", "n", "s"], "RUTES COMPLETES"),
+            (["j", " ", (10, 40), "\x1b", "n", (24, 100), "r", "s"], "80x18"),
+        ]
+        for keys, title in cases:
+            with self.subTest(keys=keys):
+                selected, frames = self.choose(keys)
+                self.assertEqual(selected.paths, [(b"Fotos",)])
+                self.assertTrue(any(title in frame for frame in frames))
+                self.assertTrue(any("Segur que vols sortir?" in frame for frame in frames))
+        for prefix in (["j", " ", "r"], ["j", " ", "i"],
+                       ["j", " ", "r", "i"], ["j", " ", (10, 40)]):
+            with self.subTest(prefix=prefix):
+                result, _ = self.choose([*prefix, "\x1b", "s"])
+                self.assertIsNone(result)
+
     def test_paging_home_end_backspace_and_resize(self):
         selected, _ = self.choose([Terminal.KEY_END, Terminal.KEY_HOME, "j", "j",
                                    Terminal.KEY_RIGHT, Terminal.KEY_BACKSPACE,
@@ -410,6 +441,29 @@ class TerminalCommandTests(unittest.TestCase):
                 self.assertEqual(code, expected, text)
                 destination.assert_not_called()
                 close.assert_called_once()
+
+    def test_escape_confirmed_exit_creates_no_destination_and_restores_terminal(self):
+        terminal = Terminal(["j", " ", "\x1b", "s"])
+        with patch.object(commands, "Destination") as destination, \
+             patch.object(commands, "ensure_terminal", return_value=terminal), \
+             patch.object(self.flow.source, "close") as close:
+            code, text = self.flow.run_cli(["select", "--dest", "new"])
+        self.assertEqual(code, 0, text)
+        destination.assert_not_called()
+        close.assert_called_once()
+        self.assertTrue(terminal.restored)
+        self.assertIn('"event": "cancelled"', text)
+
+    def test_escape_cancelled_exit_can_still_recover_original_selection(self):
+        terminal = Terminal(["j", " ", "\x1b", "\n", "r", "s"])
+        destination = MemoryOutput()
+        destination.path, destination.close = "new", lambda *args: None
+        with patch.object(commands, "ensure_terminal", return_value=terminal):
+            code, text = self.flow.run_cli(["select", "--dest", "new"], destination)
+        self.assertEqual(code, 0, text)
+        self.assertTrue(terminal.restored)
+        self.assertEqual(destination.rows[0]["included_paths"][0]["path"], "Fotos")
+        self.assertEqual(destination.files[(b"tree", b"Fotos", b"uno.txt")].getvalue(), b"photodata")
 
     def test_no_tty_is_rejected_before_opening_sources(self):
         with patch.object(tui.sys, "stdin", io.StringIO()), patch.object(commands, "Destination") as destination:
@@ -512,7 +566,7 @@ class SyntheticPickerTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "posix", "Real curses/PTY integration requires POSIX")
 class PosixTerminalTests(unittest.TestCase):
-    def run_terminal(self, directory, fixture, keys):
+    def run_terminal(self, directory, fixture, keys, expected_progress=False):
         import errno
         import fcntl
         import pty
@@ -555,6 +609,10 @@ class PosixTerminalTests(unittest.TestCase):
                     sent = True
             self.assertTrue(sent, captured.decode("utf-8", "replace"))
             self.assertEqual(process.wait(timeout=2), 0, captured.decode("utf-8", "replace"))
+            if expected_progress:
+                self.assertIn(b"Recuperant: 'folder/hello.txt'", captured)
+                self.assertIn(b"\x1b[4A", captured)
+                self.assertIn(b'"status": "completed_supported_scope"', captured)
             return output
         finally:
             if process is not None and process.poll() is None:
@@ -571,7 +629,7 @@ class PosixTerminalTests(unittest.TestCase):
             for index in (0, 1):
                 fixture.damage(index, fixture.payload_offsets["binary"])
             before = [hashlib.sha256(path.read_bytes()).digest() for path in fixture.paths]
-            output = self.run_terminal(directory, fixture, b" lrs")
+            output = self.run_terminal(directory, fixture, b" lrs", expected_progress=True)
             self.assertEqual((output / "tree/folder/hello.txt").read_bytes(), b"A" * 512)
             self.assertEqual(list((output / "tree/folder").iterdir()), [output / "tree/folder/hello.txt"])
             self.assertEqual(before, [hashlib.sha256(path.read_bytes()).digest() for path in fixture.paths])
@@ -580,6 +638,20 @@ class PosixTerminalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(directory)
             output = self.run_terminal(directory, fixture, b"q")
+            self.assertFalse(output.exists())
+
+    def test_real_terminal_escape_cancel_preserves_selection_and_recovers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            before = [hashlib.sha256(path.read_bytes()).digest() for path in fixture.paths]
+            output = self.run_terminal(directory, fixture, b" \x1bnrs", expected_progress=True)
+            self.assertEqual((output / "tree/folder/hello.txt").read_bytes(), b"A" * 512)
+            self.assertEqual(before, [hashlib.sha256(path.read_bytes()).digest() for path in fixture.paths])
+
+    def test_real_terminal_escape_confirm_creates_no_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            output = self.run_terminal(directory, fixture, b" \x1bs")
             self.assertFalse(output.exists())
 
 

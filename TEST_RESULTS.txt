@@ -1,4 +1,21 @@
-VALIDACIO ACTUAL: assistent de configuracio pel terminal (2026-11-15)
+VALIDACIO ACTUAL: suite completa, inclos progres al terminal (2026-11-25)
+Entorn executat: Windows, Python 3.9.13.
+Ordre: python -B -m unittest discover -q
+Resultat: Ran 129 tests in 1.375s -- OK (skipped=28).
+101 proves superades i 28 omeses.
+
+Limitacions: aquesta execucio no valida el kernel POSIX, un terminal Linux real,
+discs fisics ni pools creats per OpenZFS. No hi ha garantia de recuperacio.
+Abans d'utilitzar fonts reals, executar en Linux:
+  python3 -B -m unittest discover -v
+SHA256SUMS.txt no es distribueix al repositori; les copies antigues no validen
+aquesta revisio.
+
+======================================================================
+RESULTATS ANTERIORS: assistent de configuracio
+======================================================================
+
+VALIDACIO ANTERIOR: assistent de configuracio pel terminal (2026-11-15)
 Entorn executat: Windows, Python 3.9.13.
 La recuperacio continua destinada a Python >= 3.10 i POSIX, preferiblement Linux.
 

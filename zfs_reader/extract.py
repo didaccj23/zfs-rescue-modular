@@ -125,7 +125,7 @@ def write_all(fd, data):
 
 
 def extract(fs, dest, max_file_size=16 << 40, max_entries=MAX_ENTRIES,
-            selection=None, max_dir_entries=MAX_DIR_ENTRIES):
+            selection=None, max_dir_entries=MAX_DIR_ENTRIES, progress=None):
     selection = selection if selection is not None else Selection()
     stats = Counter()
     stack = PendingPaths()
@@ -139,6 +139,8 @@ def extract(fs, dest, max_file_size=16 << 40, max_entries=MAX_ENTRIES,
         visited += 1
         require(visited <= max_entries and depth <= 256, "Directory traversal limit exceeded")
         record = dict(object=number, **path_record(parts))
+        if progress is not None:
+            progress(parts)  # Before metadata/data reads; not a claim of successful recovery.
         try:
             dn = fs.os.node(number)
             attrs = fs.attributes(dn)
