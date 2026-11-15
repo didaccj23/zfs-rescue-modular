@@ -12,6 +12,46 @@ extreure abans tot `vol1/DATA` ni necessitar espai per a tot el dataset.
 [Selector](#3-triar-amb-el-teclat-i-recuperar) · [Resultats](#4-resultats-i-lots) ·
 [Referència tècnica](#referència)
 
+## Inici ràpid: assistent pel terminal
+
+**No cal editar cap codi ni definir variables Bash.** Des d'un terminal Linux,
+entra a la carpeta de l'aplicació i executa:
+
+```bash
+sudo python3 zfs_rescue.py
+```
+
+Amb imatges llegibles i un destí accessible pots ometre `sudo`. L'assistent:
+
+1. Demana la **ruta de cada font**: partició ZFS o imatge. A la segona font pots
+   prémer Enter si només tens un membre; en aquest cas no hi ha rèplica alternativa.
+2. Demana si cada font és una partició o un **disc complet**. Per a discs complets
+   exigeix l'offset i la longitud coneguts de la partició ZFS, **en bytes**; no els
+   inventa ni tria automàticament una partició. Si no els saps, cancel·la i consulta
+   `probe` segons la referència.
+3. Demana el mapa ddrescue de cada font, si en tens; Enter el deixa sense mapa.
+4. Demana el dataset —Enter accepta **`vol1/DATA`**— i una **carpeta de destí nova**
+   en un disc sa, físicament independent i ja muntat.
+5. Mostra el resum i demana `s` per obrir el selector. Llavors valida les fonts i
+   el pool i obre el [selector de carpetes i fitxers](#3-triar-amb-el-teclat-i-recuperar).
+   **Aquesta primera confirmació no inicia cap còpia**: cal marcar rutes i tornar
+   a confirmar dins del selector.
+
+Escriu les rutes **sense cometes**, també si contenen espais. `q` cancel·la a
+qualsevol pregunta; Enter a la confirmació final també cancel·la. No es crea
+cap destí ni s'obre cap font fins que s'accepta la configuració.
+
+L'assistent requereix entrada i sortida connectades a un terminal interactiu.
+No munta discs, no crea imatges i no repara el pool. **Les precaucions i els
+límits experimentals de la guia continuen vigents.**
+
+Les ordres amb arguments continuen disponibles. Per demanar només els valors
+que falten, també pots fer:
+
+```bash
+sudo python3 zfs_rescue.py select --interactive --dataset vol1/DATA
+```
+
 ## 1. Preparació
 
 - **Conserva els originals.** El més segur és fer una imatge independent de cada
@@ -455,12 +495,14 @@ zfs-rescue-modular/
 │   ├── selection.py       # Rutes i pressupost de recorregut
 │   ├── browse.py          # Llistat de metadades
 │   ├── tui.py             # Selector interactiu, sense llegir continguts
+│   ├── wizard.py          # Assistent de fonts, dataset i destí pel terminal
 │   ├── extract.py         # Destí i extracció
 │   └── commands.py        # Arguments i execució
 ├── tests/
 │   ├── __init__.py
 │   ├── test_selection.py
 │   ├── test_tui.py
+│   ├── test_wizard.py
 │   └── test_zfs_rescue.py
 ├── README.md
 ├── AUDITORIA_CA.md
