@@ -219,9 +219,9 @@ def _put(screen, terminal, row, text, highlight=False):
 
 def _confirm_exit(screen, terminal):
     """Ask before abandoning the current selection; only lowercase s confirms."""
-    height, _ = screen.getmaxyx()
-    _put(screen, terminal, height - 2,
-         "Segur que vols sortir? s: sí | qualsevol altra tecla: no")
+    screen.erase()
+    _put(screen, terminal, 0, "Segur que vols sortir?")
+    _put(screen, terminal, 1, "s: sí | qualsevol altra tecla: no")
     screen.refresh()
     return screen.get_wch() == "s"
 

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import stat
+import sys
 import uuid
 import zlib
 from collections import Counter
@@ -14,6 +15,7 @@ from .base import Corrupt, LOG, MAX_BLOCK, MAX_ENTRIES, RescueError, ResourceLim
 from .browse import browse
 from .extract import Destination, extract
 from .pool import PoolView
+from .progress import RecoveryProgress
 from .scan import scan
 from .selection import MAX_DIR_ENTRIES, Selection
 from .tui import choose, ensure_terminal
@@ -240,8 +242,10 @@ def cli(argv=None):
                                            "path_bytes_hex": b"/".join(parts).hex()}
                                           for parts in selection.paths],
                           limitations="One dataset/TXG; no child datasets, ACL/xattr restore or ZIL replay. See README_CA.md.")
-        stats = extract(filesystem, destination, args.max_file_size, args.max_entries,
-                        selection, args.max_dir_entries)
+        sys.stdout.flush()  # Keep earlier JSON records above the live terminal region.
+        with RecoveryProgress() as progress:
+            stats = extract(filesystem, destination, args.max_file_size, args.max_entries,
+                            selection, args.max_dir_entries, progress=progress)
         result = {"event": "summary", "status": "partial" if stats.get("errors") else "completed_supported_scope",
                   "counts": stats, "reader": dict(view.reader.stats),
                   "scope": "selected_paths" if selective else "whole_dataset",
