@@ -41,7 +41,7 @@ els noms amb els objectes. Tenir el contingut físic d'un fitxer no és suficien
 per reconstruir-ne el camí original quan aquestes relacions s'han perdut. En
 aquest cas el programa registra la fallada i no inventa noms o ubicacions.
 
-El suport de formats indicat a `README_CA.md` descriu la implementació, no una
+El suport de formats indicat a `README.md` descriu la implementació, no una
 certificació d'interoperabilitat amb totes les versions de ZFS. Abans de confiar
 en el resultat d'un cas real, cal contrastar una mostra de fitxers i el manifest
 amb dades conegudes o amb una eina de recuperació que llegeixi aquell mateix pool.
