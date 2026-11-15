@@ -17,6 +17,7 @@ from .pool import PoolView
 from .scan import scan
 from .selection import MAX_DIR_ENTRIES, Selection
 from .tui import choose, ensure_terminal
+from .wizard import SetupCancelled, configure
 
 def probe_gpt(source, sector_size):
     """Read both GPTs with header/table CRC validation. Never modify either."""
@@ -67,10 +68,14 @@ def integer(text):
 
 
 def cli(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=("probe", "scan", "list", "check", "browse", "select", "extract"),
+    parser = argparse.ArgumentParser(
+        description="Offline ZFS mirror rescue. Run without arguments for terminal setup and file selection.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("command", nargs="?", choices=("probe", "scan", "list", "check", "browse", "select", "extract"),
                         help="select: interactive folder/file picker, then confirmed extraction")
-    parser.add_argument("--source", action="append", required=True, help="Mirror image or leaf partition; repeat for member 2")
+    parser.add_argument("-i", "--interactive", action="store_true",
+                        help="select: ask for missing sources, dataset and destination (default without a command)")
+    parser.add_argument("--source", action="append", help="Mirror image or leaf partition; repeat for member 2")
     parser.add_argument("--offset", action="append", type=integer, help="Vdev start in bytes, one per source; default all zero")
     parser.add_argument("--length", action="append", type=integer, help="Vdev/partition length, one per source; default to end")
     parser.add_argument("--mapfile", action="append", help="ddrescue map, one per source; '-' means no map")
@@ -93,17 +98,23 @@ def cli(argv=None):
                         help="Maximum entries/leaves in a visited directory (default 100000, maximum 2000000)")
     parser.add_argument("-v", "--verbose", action="count", default=0)
     args = parser.parse_args(argv)
+    args.interactive = args.interactive or args.command is None
+    args.command = args.command or "select"
     logging.basicConfig(level=logging.DEBUG if args.verbose > 1 else logging.INFO if args.verbose else logging.WARNING,
                         format="%(levelname)s: %(message)s")
-    if not 1 <= len(args.source) <= 2:
+    if args.interactive and args.command != "select":
+        parser.error("--interactive is only used by select")
+    if not args.source and not args.interactive:
+        parser.error("--source is required (or run without arguments for terminal setup)")
+    if args.source is not None and not 1 <= len(args.source) <= 2:
         parser.error("Supply one or two sources")
     for key in ("offset", "length", "mapfile"):
         value = getattr(args, key)
-        if value is not None and len(value) != len(args.source):
+        if value is not None and (not args.source or len(value) != len(args.source)):
             parser.error(f"--{key} must be supplied once per source")
-    if args.command in ("check", "browse", "select", "extract") and not args.dataset:
+    if args.command in ("check", "browse", "select", "extract") and not args.dataset and not args.interactive:
         parser.error("--dataset is required for check/browse/select/extract")
-    if args.command in ("select", "extract") and not args.dest:
+    if args.command in ("select", "extract") and not args.dest and not args.interactive:
         parser.error("--dest is required for select/extract")
     if args.dest and args.command not in ("select", "extract"):
         parser.error("--dest is only used by select/extract")
@@ -139,6 +150,8 @@ def cli(argv=None):
         # Keep --help and argument validation usable without importing POSIX-only fcntl.
         if os.name != "posix":
             raise OSError("Reading/extraction requires POSIX (preferably Linux), not native Windows")
+        if args.interactive:
+            configure(args, integer)
         terminal = ensure_terminal() if args.command == "select" else None
         from .sources import Source
 
@@ -237,6 +250,9 @@ def cli(argv=None):
         destination.emit(**result)
         print(json.dumps(result, ensure_ascii=True))
         return 2 if stats.get("errors") else 0
+    except SetupCancelled:
+        output({"event": "cancelled", "status": "cancelled", "note": "No sources were opened or destination created."})
+        return 0
     except (RescueError, OSError, ValueError) as exc:
         LOG.error("Stopped: %s", exc)
         if destination:

@@ -1,4 +1,36 @@
-VALIDACIO ACTUAL: selector de terminal i README reorganitzat (2026-11-14)
+VALIDACIO ACTUAL: assistent de configuracio pel terminal (2026-11-15)
+Entorn executat: Windows, Python 3.9.13.
+La recuperacio continua destinada a Python >= 3.10 i POSIX, preferiblement Linux.
+
+Ordre: python -B -m unittest discover -q
+Resultat: Ran 111 tests -- OK (skipped=26).
+85 proves portables superades, incloses 18 noves a test_wizard.py.
+
+Cobertura nova:
+- Execucio sense arguments i select --interactive; arguments explicits preservats.
+- Fonts de particio o disc complet, limits en bytes obligatoris per disc complet,
+  mapes opcionals per font, un o dos membres i dataset per defecte vol1/DATA.
+- Rutes amb espais i ~, rebuig de fonts inexistents/directoris/duplicats,
+  reintent d'opcions i nombres invalids, desti nou amb carpeta pare existent.
+- Confirmacio separada abans d'obrir fonts; q, EOF, Enter/no i Ctrl+C.
+- Rebuig sense TTY, errors de flags abans de preguntes, rebuig en Windows abans
+  d'obrir fonts i ajuda portable.
+- Flux sintetic complet: assistent -> scan/seleccio TXG -> selector -> extraccio,
+  replica corrupta, comprovacio dels bytes i hashes de fonts invariants.
+
+Limitacions: E/S de fonts/desti i pantalla adaptades explicitament en Windows.
+Les 26 proves POSIX s'ometen; no s'ha validat l'assistent amb terminal Linux real,
+discs fisics ni pools creats per OpenZFS. No hi ha garantia de recuperacio.
+Abans d'utilitzar fonts reals, executar en Linux:
+  python3 -B -m unittest -v test_selection test_tui test_wizard test_zfs_rescue
+L'ajuda CLI i git diff --check s'han comprovat. SHA256SUMS.txt no s'ha modificat
+i continua desactualitzat.
+
+======================================================================
+RESULTATS ANTERIORS: selector de terminal, abans de l'assistent
+======================================================================
+
+VALIDACIO ANTERIOR: selector de terminal i README reorganitzat (2026-11-14)
 Entorn executat: Windows, Python 3.9.13.
 La recuperacio continua destinada a Python >= 3.10 i POSIX, preferiblement Linux.
 
