@@ -4,6 +4,9 @@
 > L'ampliació de selecció es documenta al final; la identitat AST històrica
 > no s'aplica als mètodes modificats ara.
 
+**Ús real:** l'eina ha funcionat en el cas personal de l'autor. Aquesta auditoria
+recull les comprovacions de desenvolupament, no una validació general.
+
 La versió original és un esbós de lectura del MOS, no un rescatador de datasets.
 No l'he considerat adequada per executar-la com a única via de recuperació sobre
 discs físicament degradats.
@@ -31,10 +34,9 @@ un buffer llegit amb un bloc correcte.
 
 ## Què continua sense estar demostrat
 
-No s'ha observat el contingut dels discs de l'usuari ni s'ha verificat el seu
-pool, la versió concreta de TrueNAS/OpenZFS, les features utilitzades, el xifrat,
-la integritat dels noms o la proporció de blocs recuperables. Tampoc no s'ha
-executat aquest programa en FreeBSD o contra dispositius físics.
+L'auditoria original no va verificar el pool de l'usuari, la versió de
+TrueNAS/OpenZFS, les features, el xifrat ni la integritat de les dades.
+Tampoc documenta execucions en FreeBSD o contra dispositius físics.
 
 La preservació exacta de l'arbre depèn de poder llegir les metadades que relacionen
 els noms amb els objectes. Tenir el contingut físic d'un fitxer no és suficient

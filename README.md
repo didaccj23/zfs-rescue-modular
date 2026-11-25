@@ -1,8 +1,14 @@
 # Rescat ZFS: triar i recuperar carpetes o fitxers
 
-**Experimental:** provat amb imatges sintètiques i errors injectats, **no amb un
-pool creat per OpenZFS ni amb els teus discs**. Llistar una carpeta no garanteix
-que el contingut dels seus fitxers sigui recuperable.
+**Projecte personal i experimental.** He desenvolupat aquesta eina a mida per
+recuperar dades del meu cas concret i m'ha funcionat. La comparteixo per si pot
+ser útil, sense garantir una recuperació completa ni el funcionament amb altres
+pools, configuracions o avaries.
+
+**Ús sota la teva responsabilitat.** L'eina es proporciona «tal qual», sense
+garanties de funcionament, integritat de les dades ni adequació a cap finalitat.
+En la mesura permesa per la legislació aplicable, l'autor no assumeix
+responsabilitat pels danys o pèrdues derivats del seu ús.
 
 Lector Python offline per a **un únic mirror de dos membres**. Permet navegar
 amb el teclat i recuperar **carpetes senceres o fitxers individuals**, sense
@@ -544,8 +550,9 @@ de teclat, marques, revisió/confirmació, cancel·lació, límits i curses amb 
 s'executen proves portables amb E/S i pantalla adaptades: **no validen el kernel
 POSIX ni el terminal real**. Les proves d'integració i curses/PTY s'hi ometen i
 cal reexecutar-les en Linux. Les imatges estan codificades segons el format
-documentat, **no generades per OpenZFS**; tampoc s'han provat discs de l'usuari,
-FreeBSD real o una màquina de recuperació de 8 GB.
+documentat, **no generades per OpenZFS**. L'ús amb èxit en el meu cas personal
+és independent d'aquesta suite i no és una validació reproduïble d'altres pools.
+No es documenta una validació en FreeBSD real o en una màquina de recuperació de 8 GB.
 
 `SHA256SUMS.txt` no es distribueix al repositori; si en conserves una còpia antiga,
 **està desactualitzada** i no valida aquesta revisió.

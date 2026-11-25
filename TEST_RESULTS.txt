@@ -1,3 +1,6 @@
+US REAL: l'eina ha funcionat en el cas personal de l'autor. Els resultats
+seguents descriuen nomes les proves sintetiques, no aquest us real.
+
 VALIDACIO ACTUAL: suite completa, inclos progres al terminal (2026-11-25)
 Entorn executat: Windows, Python 3.9.13.
 Ordre: python -B -m unittest discover -q
