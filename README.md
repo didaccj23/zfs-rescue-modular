@@ -5,6 +5,9 @@ recuperar dades del meu cas concret i m'ha funcionat. La comparteixo per si pot
 ser útil, sense garantir una recuperació completa ni el funcionament amb altres
 pools, configuracions o avaries.
 
+**Llicència:** aquest projecte es distribueix sota la
+[GNU GPL versió 3](LICENSE) (`GPL-3.0-only`).
+
 **Ús sota la teva responsabilitat.** L'eina es proporciona «tal qual», sense
 garanties de funcionament, integritat de les dades ni adequació a cap finalitat.
 En la mesura permesa per la legislació aplicable, l'autor no assumeix
@@ -528,6 +531,7 @@ zfs-rescue-modular/
 │   ├── test_progress.py
 │   └── test_zfs_rescue.py
 ├── README.md
+├── LICENSE
 ├── AUDITORIA_CA.md
 ├── SOURCES.md
 └── TEST_RESULTS.txt
